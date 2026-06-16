@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Liquid Glass 仿真预览 · Clear vs Regular</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 980px; height: 620px; overflow: hidden;
+    font-family: -apple-system, "SF Pro Text", "PingFang SC", sans-serif; }
+  /* 一张“桌面”，给玻璃东西去折射/模糊：彩色渐变 + 一点内容 */
+  body {
+    background:
+      radial-gradient(1200px 600px at 12% 8%, #ff6b9d 0%, transparent 45%),
+      radial-gradient(1000px 700px at 95% 30%, #4d8bff 0%, transparent 50%),
+      radial-gradient(900px 600px at 50% 110%, #20e3b2 0%, transparent 55%),
+      linear-gradient(135deg, #2a2150 0%, #15324f 50%, #0e2233 100%);
+    position: relative;
+  }
+  .deco { position: absolute; color: rgba(255,255,255,0.9); }
+  .deco.title { top: 40px; left: 56px; font-size: 64px; font-weight: 800; letter-spacing: -1px;
+    background: linear-gradient(90deg,#fff,rgba(255,255,255,0.5)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .deco.sub { top: 128px; left: 58px; font-size: 20px; color: rgba(255,255,255,0.65); }
+  .grid { position:absolute; inset:0; background-image:
+      linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px);
+    background-size: 44px 44px; }
+
+  .stage { position: absolute; left: 0; right: 0; display: flex; flex-direction: column;
+    align-items: center; gap: 30px; }
+  .stage.s1 { top: 250px; }
+  .label { color: #fff; font-size: 13px; opacity: 0.85; letter-spacing: 0.3px; }
+  .label b { font-weight: 700; }
+  .label span { opacity: 0.6; }
+
+  /* —— 听写悬浮条 —— */
+  .bar {
+    --radius: 18px;
+    --w: 460px; --h: 58px;
+    width: var(--w); height: var(--h);
+    display: flex; align-items: center; gap: 13px; padding: 0 22px;
+    border-radius: var(--radius);
+    color: #fff; position: relative; isolation: isolate;
+  }
+  /* Clear：更透更亮、镜面感（低模糊 + 提亮提饱和 + 强高光边） */
+  .clear {
+    background: rgba(255,255,255,0.10);
+    -webkit-backdrop-filter: blur(7px) saturate(180%) brightness(1.18);
+    backdrop-filter: blur(7px) saturate(180%) brightness(1.18);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.55),          /* 顶部镜面高光 */
+      inset 0 0 0 1px rgba(255,255,255,0.22),         /* 通透亮边 */
+      inset 0 -8px 18px rgba(255,255,255,0.06),
+      0 12px 40px rgba(0,0,0,0.34);
+  }
+  /* Regular：带浅 tint、偏磨砂（高模糊 + 浅白 tint + 柔边） */
+  .regular {
+    background: rgba(255,255,255,0.20);
+    -webkit-backdrop-filter: blur(20px) saturate(130%) brightness(1.06);
+    backdrop-filter: blur(20px) saturate(130%) brightness(1.06);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.35),
+      inset 0 0 0 1px rgba(255,255,255,0.14),
+      0 10px 32px rgba(0,0,0,0.30);
+  }
+  /* 顶部一层镜面 sheen（Clear 更明显） */
+  .bar::before {
+    content:""; position:absolute; inset:0; border-radius: inherit; pointer-events:none;
+    background: linear-gradient(180deg, rgba(255,255,255,0.28) 0%, rgba(255,255,255,0.0) 38%);
+  }
+  .clear::before { opacity: 1; }
+  .regular::before { opacity: 0.5; }
+
+  .wave { display:flex; align-items:center; gap:3px; height:18px; flex:0 0 auto; }
+  .wave i { width:3px; border-radius:2px; background:#fff; display:block; }
+  .wave i:nth-child(1){height:7px} .wave i:nth-child(2){height:13px}
+  .wave i:nth-child(3){height:18px} .wave i:nth-child(4){height:11px} .wave i:nth-child(5){height:6px}
+  .txt { font-size:15px; letter-spacing:0.1px; white-space:nowrap; text-shadow: 0 1px 2px rgba(0,0,0,0.25); }
+</style>
+</head>
+<body>
+  <div class="grid"></div>
+  <div class="deco title">Whisper</div>
+  <div class="deco sub">本地听写 · Liquid Glass 仿真预览（macOS 15 上的 CSS 近似）</div>
+
+  <div class="stage s1">
+    <div class="bar clear">
+      <div class="wave"><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="txt">聆听中… 今天的会议改到下午三点</div>
+    </div>
+    <div class="label">① <b>Clear</b> · 更透更亮、镜面感 <span>(blur 7 · brightness 1.18 · tint α0.10 · 强高光边)</span></div>
+
+    <div class="bar regular">
+      <div class="wave"><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="txt">聆听中… 今天的会议改到下午三点</div>
+    </div>
+    <div class="label">② <b>Regular</b> · 带浅 tint、偏磨砂 <span>(blur 20 · brightness 1.06 · tint α0.20 · 柔边)</span></div>
+  </div>
+</body>
+</html>

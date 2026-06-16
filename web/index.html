@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="style.css">
+  <title>听写</title>
+</head>
+<body>
+  <!-- 悬浮条：窗口本身即原生毛玻璃面板，这里只画描边 + 内容。默认隐藏，.visible 时淡入。 -->
+  <div id="bar">
+    <div id="wave" aria-hidden="true">
+      <span></span><span></span><span></span><span></span><span></span>
+    </div>
+    <div id="text">
+      <span id="line">聆听中…</span>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

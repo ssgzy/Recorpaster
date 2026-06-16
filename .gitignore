@@ -1,0 +1,51 @@
+# —— Python ——
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# —— 虚拟环境 ——
+venv/
+.venv/
+env/
+.env
+
+# —— macOS ——
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# —— 模型权重 / 缓存（绝不入库）——
+*.npz
+*.safetensors
+*.bin
+*.pt
+*.ckpt
+*.mlpackage
+models/
+.cache/
+huggingface/
+
+# —— 音频（隐私：绝不入库）——
+*.m4a
+*.wav
+*.mp3
+*.aac
+*.flac
+*.ogg
+
+# —— 本地配置（含将来的 API key，绝不入库）——
+config.json
+*.local.json
+settings.local.json
+secrets.*
+.env.local
+
+# —— 运行时 / 生成物 ——
+*.log
+whisper_app.log
+glass_preview.png
+settings_preview.png
+*.tmp

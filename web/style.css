@@ -1,0 +1,132 @@
+/* 悬浮条 · Clear 玻璃质感。桌面模糊来自窗口背后的原生层（macOS26 NSGlassEffectView /
+   <26 NSVisualEffectView）；这里在透明 webview 上叠 Clear 的“镜面感”：通透白底 + 强顶部
+   高光 sheen + 亮边 + 柔投影。所有玻璃参数集中在 :root，易调。 */
+:root {
+  --fg: rgba(255, 255, 255, 0.98);
+  --sub: rgba(255, 255, 255, 0.6);
+  --bar-h: 18px;
+
+  /* —— Clear 玻璃参数（易调）—— */
+  --glass-radius: 18px;
+  --glass-fill: rgba(255, 255, 255, 0.10);   /* 通透白底（Clear：低）*/
+  --glass-rim: rgba(255, 255, 255, 0.24);    /* 1px 亮边 */
+  --glass-sheen: rgba(255, 255, 255, 0.30);  /* 顶部镜面高光 */
+  --glass-shadow: 0 12px 40px rgba(0, 0, 0, 0.34);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  background: transparent;             /* 关键：透出背后的原生玻璃 */
+  overflow: hidden;
+  font-family: -apple-system, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+#bar {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 0 22px;
+  border-radius: var(--glass-radius);
+  background: var(--glass-fill);       /* 通透白底，强化 Clear 的明亮感 */
+  box-shadow:
+    inset 0 1px 0 var(--glass-sheen),          /* 顶部镜面高光 */
+    inset 0 0 0 1px var(--glass-rim),          /* 通透亮边 */
+    inset 0 -10px 20px rgba(255, 255, 255, 0.05),
+    var(--glass-shadow);
+  color: var(--fg);
+  isolation: isolate;
+
+  /* 默认隐藏：下沉 + 透明 + 轻微缩小；.visible 平滑弹出 */
+  opacity: 0;
+  transform: translateY(10px) scale(0.985);
+  transition: opacity 0.20s ease, transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+/* 顶部一层镜面 sheen（Clear 风格的关键质感）*/
+#bar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0) 40%);
+}
+#bar.visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+/* —— 聆听波形：5 根细条，错相起伏 —— */
+/* position+z-index：确保内容画在 #bar::before 镜面 sheen 之上（sheen 是定位元素，
+   否则会盖住静态流内文字，顶部被发白） */
+#wave, #text { position: relative; z-index: 1; }
+
+#wave {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: var(--bar-h);
+}
+#wave span {
+  width: 3px;
+  height: 5px;
+  border-radius: 2px;
+  background: var(--fg);
+  opacity: 0.5;
+  transition: height 0.2s ease, opacity 0.2s ease;
+}
+#bar.listening #wave span {
+  animation: wave 1.05s ease-in-out infinite;
+}
+#bar.listening #wave span:nth-child(1) { animation-delay: 0s; }
+#bar.listening #wave span:nth-child(2) { animation-delay: 0.12s; }
+#bar.listening #wave span:nth-child(3) { animation-delay: 0.24s; }
+#bar.listening #wave span:nth-child(4) { animation-delay: 0.12s; }
+#bar.listening #wave span:nth-child(5) { animation-delay: 0s; }
+@keyframes wave {
+  0%, 100% { height: 5px; opacity: 0.45; }
+  50%      { height: var(--bar-h); opacity: 1; }
+}
+
+/* —— 文本 —— */
+#text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 15px;
+  line-height: 1.3;
+  letter-spacing: 0.1px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);   /* 通透玻璃上保证可读 */
+}
+#line {
+  display: inline-block;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+#text.placeholder #line { color: var(--sub); }
+
+/* 每次出新句：淡入 + 轻微上移 */
+#line.appear {
+  animation: appear 0.30s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes appear {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #bar { transition: opacity 0.12s linear; }
+  #bar.listening #wave span { animation: none; opacity: 0.7; height: 12px; }
+  #line.appear { animation: none; }
+}
