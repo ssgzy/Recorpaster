@@ -49,3 +49,9 @@ whisper_app.log
 glass_preview.png
 settings_preview.png
 *.tmp
+
+# —— 打包产物 ——
+build/
+dist/
+*.app/
+*.dmg

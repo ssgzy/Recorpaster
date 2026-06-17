@@ -47,6 +47,8 @@ DEFAULTS = {
     "quality_mode": False,      # False=速度优先 / True=质量优先（藏在“质量模式”后，不暴露 beam）
     # 标点风格引导（本身带标点的中文；Whisper 跟随其标点风格，非指令）。置空可关闭。
     "initial_prompt": "以下是普通话的句子，请加上标点。",
+    # VAD 后端：app 默认 'onnx'（纯 onnxruntime，不依赖 torch，打包轻量）。'torch' 为 silero 官方包。
+    "vad_backend": "onnx",
 
     # —— Phase 3 AI 润色（默认关闭，缺 key 优雅降级）——
     "polish_enabled": False,
@@ -107,6 +109,7 @@ def build_config(s: dict):
         vad_threshold=float(s.get("vad_threshold", 0.5)),
         quality_mode=bool(s.get("quality_mode", False)),
         initial_prompt=s.get("initial_prompt", DEFAULTS["initial_prompt"]),
+        vad_backend=s.get("vad_backend", DEFAULTS["vad_backend"]),
     )
 
 

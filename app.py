@@ -23,6 +23,7 @@ import os
 import platform
 import queue
 import re
+import sys
 import threading
 import time
 
@@ -87,6 +88,41 @@ _CJK_PUNCT_RE = re.compile(r"(?<=[一-鿿㐀-䶿])([,.!?;:])(?=[一-鿿㐀-䶿])
 def normalize_cjk_punct(text: str) -> str:
     return _CJK_PUNCT_RE.sub(lambda m: _ASCII2FULL[m.group(1)], text)
 
+
+class _Tee:
+    """同时写多个流（控制台 + 日志文件），每行 flush。"""
+    def __init__(self, *streams):
+        self._streams = [s for s in streams if s is not None]
+
+    def write(self, s):
+        for st in self._streams:
+            try:
+                st.write(s)
+                st.flush()
+            except Exception:
+                pass
+
+    def flush(self):
+        for st in self._streams:
+            try:
+                st.flush()
+            except Exception:
+                pass
+
+
+def setup_logging():
+    """打包后的 .app 没有控制台，把 stdout/stderr 落到 ~/Library/Logs/Recorpaster.log，
+    方便排错（也便于开发期核对）。"""
+    try:
+        logdir = os.path.expanduser("~/Library/Logs")
+        os.makedirs(logdir, exist_ok=True)
+        f = open(os.path.join(logdir, "Recorpaster.log"), "a", buffering=1, encoding="utf-8")
+        sys.stdout = _Tee(sys.__stdout__, f)
+        sys.stderr = _Tee(sys.__stderr__, f)
+        print(f"\n===== Recorpaster 启动 @ {os.environ.get('TZ','')} (pid {os.getpid()}) =====")
+    except Exception as e:
+        print(f"[warn] 日志文件初始化失败: {e}")
+
 # 菜单栏图标：单色 template SF Symbol，随系统明暗自适应
 TRAY_SYMBOLS = {
     "idle":      "mic",
@@ -99,7 +135,14 @@ TRAY_SYMBOLS = {
 import pyperclip
 from pynput import keyboard
 
-WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+def _resource_dir() -> str:
+    """资源根目录：PyInstaller 打包后用 sys._MEIPASS，否则用源码目录。"""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+WEB_DIR = os.path.join(_resource_dir(), "web")
 INDEX_HTML = os.path.join(WEB_DIR, "index.html")
 SETTINGS_HTML = os.path.join(WEB_DIR, "settings.html")
 
@@ -468,21 +511,62 @@ class App:
             self._set_tray_state("loading", "加载模型中…")
 
     # ---------------- 引擎 ----------------
+    @staticmethod
+    def _model_cached(cfg) -> bool:
+        """模型是否已在本地缓存（决定首次运行是否需要下载）。"""
+        if cfg.engine == "mlx":
+            repo = cfg.mlx_repo.replace("/", "--")
+            p = os.path.expanduser(f"~/.cache/huggingface/hub/models--{repo}")
+            return os.path.isdir(p)
+        return True   # faster-whisper 自行管理缓存
+
+    @staticmethod
+    def _download_error_msg(e) -> str:
+        es = str(e).lower()
+        net = ("connection", "network", "timeout", "resolve", "http", "ssl",
+               "offline", "name or service", "getaddrinfo", "max retries", "temporarily")
+        if any(k in es for k in net):
+            return "模型下载失败，请检查网络后重启"
+        return "模型加载失败，详见日志"
+
     def _build_engine(self):
         cfg = settings.build_config(self.cfg_dict)
-        eng_name = cfg.engine
-        self._set_tray_state("loading", f"听写：加载 {eng_name} 模型中…")
+        downloading = not self._model_cached(cfg)
+        if downloading:
+            # 首次运行：模型未打进包，需从 HuggingFace 下载（别白屏卡住）
+            self._set_tray_state("loading", "首次运行：下载模型中（约 1.6GB，请保持联网）…")
+            self._show_persist("首次运行 · 下载模型中…（约 1.6GB，请保持联网）")
+        else:
+            self._set_tray_state("loading", f"加载 {cfg.engine} 模型中…")
         try:
             self.engine = DictationEngine(
                 cfg, on_result=self._on_result, on_status=self._on_status
             )
         except Exception as e:
+            msg = self._download_error_msg(e)
             print(f"[error] 引擎加载失败: {e}")
-            self._set_tray_state("warn", f"引擎加载失败: {e}")
+            self._set_tray_state("warn", msg)
+            if downloading:
+                self._toast(msg, secs=6)
             return
         self.engine_ready.set()
+        if downloading:
+            self._set_window_visible(False)   # 下载完隐藏提示
         self._rest_tray()   # idle（已授权）或 warn（缺权限）
         print("✅ 引擎就绪，长按右 Option 开始说话。")
+
+    def _show_persist(self, msg: str):
+        """持续显示一句状态（不自动淡出；用于较长的首次下载）。"""
+        with self._vis_lock:
+            self._vis_visible = True
+            self._vis_epoch += 1
+        def _show():
+            win = getattr(self.window, "native", None)
+            if win is not None:
+                self._position_on_active_screen(win)
+                win.orderFrontRegardless()
+        AppHelper.callAfter(_show)
+        self.js(f"window.toast({json.dumps(msg)})")
 
     def _on_status(self, s: str):
         # 引擎状态：加载提示 / "listening"
@@ -882,6 +966,7 @@ class App:
 
 
 def main():
+    setup_logging()
     print("=" * 60)
     print(" 轻量化本地语音转文字工具 · Phase 1")
     print(" 长按右 Option 说话；松开停止。菜单栏图标可退出。")

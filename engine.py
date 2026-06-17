@@ -20,8 +20,10 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import queue
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -29,11 +31,17 @@ from typing import Callable, Optional
 
 import numpy as np
 import sounddevice as sd
-import torch
-from silero_vad import load_silero_vad, VADIterator
+# 注意：torch / silero_vad 仅在 vad_backend="torch" 时惰性导入（见 _build_vad）。
+# 这样 vad_backend="onnx"（打包默认）可彻底不依赖 torch（~2GB），实现轻量化。
 
 SAMPLE_RATE = 16000
 CHUNK = 512   # Silero 在 16kHz 下每帧必须 512 样本
+
+# silero VAD 的 onnx 模型：优先项目/打包内 assets，回退到 silero_vad 包内数据
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ONNX_CANDIDATES = [os.path.join(_HERE, "assets", "silero_vad.onnx")]
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    _ONNX_CANDIDATES.insert(0, os.path.join(sys._MEIPASS, "assets", "silero_vad.onnx"))
 
 
 def default_engine() -> str:
@@ -41,6 +49,88 @@ def default_engine() -> str:
     if platform.system() == "Darwin" and platform.machine() == "arm64":
         return "mlx"
     return "faster-whisper"
+
+
+def _find_silero_onnx() -> str:
+    """定位 silero VAD 的 onnx 模型：先项目 assets（打包内置），再 silero_vad 包数据。"""
+    import os
+    for p in _ONNX_CANDIDATES:
+        if os.path.isfile(p):
+            return p
+    try:
+        import silero_vad
+        p = os.path.join(os.path.dirname(silero_vad.__file__), "data", "silero_vad.onnx")
+        if os.path.isfile(p):
+            return p
+    except Exception:
+        pass
+    raise FileNotFoundError("找不到 silero_vad.onnx（assets/ 或 silero_vad 包内均无）")
+
+
+class _OnnxSileroModel:
+    """纯 onnxruntime + numpy 调用 silero v5 模型（无 torch）。复刻 OnnxWrapper 的上下文/状态处理。"""
+    def __init__(self, onnx_path: str):
+        import onnxruntime
+        opts = onnxruntime.SessionOptions()
+        opts.inter_op_num_threads = 1
+        opts.intra_op_num_threads = 1
+        self.sess = onnxruntime.InferenceSession(
+            onnx_path, providers=["CPUExecutionProvider"], sess_options=opts)
+        self.reset_states()
+
+    def reset_states(self):
+        self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._context = np.zeros((1, 0), dtype=np.float32)
+
+    def __call__(self, chunk: np.ndarray) -> float:
+        x = chunk.reshape(1, -1).astype(np.float32)         # [1, 512]
+        if self._context.shape[1] == 0:                      # 16k 上下文 64 样本
+            self._context = np.zeros((1, 64), dtype=np.float32)
+        xin = np.concatenate([self._context, x], axis=1)     # [1, 576]
+        out, state = self.sess.run(
+            None, {"input": xin, "state": self._state, "sr": np.array(16000, dtype="int64")})
+        self._state = state
+        self._context = xin[:, -64:]
+        return float(out[0, 0])
+
+
+class _OnnxVADIterator:
+    """torch-free 版 silero VADIterator：逐 512 帧吐 {'start'} / {'end'} 事件（与 torch 路径事件完全一致，已离线核对）。"""
+    def __init__(self, onnx_path, threshold=0.5, sampling_rate=16000,
+                 min_silence_duration_ms=100, speech_pad_ms=30):
+        self.model = _OnnxSileroModel(onnx_path)
+        self.threshold = threshold
+        self.sampling_rate = sampling_rate
+        self.min_silence_samples = sampling_rate * min_silence_duration_ms / 1000
+        self.speech_pad_samples = sampling_rate * speech_pad_ms / 1000
+        self.reset_states()
+
+    def reset_states(self):
+        self.model.reset_states()
+        self.triggered = False
+        self.temp_end = 0
+        self.current_sample = 0
+
+    def __call__(self, chunk: np.ndarray, return_seconds=False):
+        n = len(chunk)
+        self.current_sample += n
+        prob = self.model(chunk)
+        if prob >= self.threshold and self.temp_end:
+            self.temp_end = 0
+        if prob >= self.threshold and not self.triggered:
+            self.triggered = True
+            start = max(0, self.current_sample - self.speech_pad_samples - n)
+            return {"start": int(start)}
+        if prob < self.threshold - 0.15 and self.triggered:
+            if not self.temp_end:
+                self.temp_end = self.current_sample
+            if self.current_sample - self.temp_end < self.min_silence_samples:
+                return None
+            end = int(self.temp_end + self.speech_pad_samples - n)   # 先算再清零
+            self.temp_end = 0
+            self.triggered = False
+            return {"end": end}
+        return None
 
 
 @dataclass
@@ -56,6 +146,9 @@ class Config:
     # 标点风格引导：一段“本身带标点”的中文，让 Whisper 跟随该风格输出标点（非指令）。
     # 向后兼容新增字段，默认非空即生效；置空字符串可关闭。
     initial_prompt: Optional[str] = "以下是普通话的句子，请加上标点。"
+    # VAD 后端：'torch'(silero 官方包，默认，行为基准) | 'onnx'(纯 onnxruntime，无 torch，打包轻量化用)。
+    # 向后兼容新增字段，默认 'torch' 保持原行为；两者断句事件已离线核对完全一致。
+    vad_backend: str = "torch"
     # —— 一般不用动 ——
     lookback_chunks: int = 10              # 句首回看，避免吞字（约 320ms）
     min_utter_sec: float = 0.3             # 短于此时长丢弃，过滤噪声
@@ -85,10 +178,25 @@ class DictationEngine:
         self._flush_req = threading.Event()   # 松开热键收尾：强制把当前缓冲送识别
         self._asr_thread: Optional[threading.Thread] = None
         self._vad_thread: Optional[threading.Thread] = None
-        self._vad = VADIterator(load_silero_vad(), threshold=cfg.vad_threshold,
-                                sampling_rate=SAMPLE_RATE,
-                                min_silence_duration_ms=cfg.min_silence_ms)
+        # self._vad: 有 reset_states()；self._vad_infer(chunk_np)->event|None（屏蔽 torch/onnx 差异）
+        self._vad, self._vad_infer = self._build_vad()
         self._transcribe = self._build_engine()   # -> Callable[[np.ndarray], str]
+
+    # ---- VAD 构建：按 vad_backend 选 torch 或纯 onnx，返回 (vad, infer(chunk_np)) ----
+    def _build_vad(self):
+        cfg = self.cfg
+        if cfg.vad_backend == "onnx":
+            vad = _OnnxVADIterator(_find_silero_onnx(), threshold=cfg.vad_threshold,
+                                   sampling_rate=SAMPLE_RATE,
+                                   min_silence_duration_ms=cfg.min_silence_ms)
+            return vad, (lambda chunk: vad(chunk, return_seconds=False))
+        # 默认 torch 后端（惰性导入，避免 onnx 模式把 torch 拖进来）
+        import torch
+        from silero_vad import load_silero_vad, VADIterator
+        vad = VADIterator(load_silero_vad(), threshold=cfg.vad_threshold,
+                          sampling_rate=SAMPLE_RATE,
+                          min_silence_duration_ms=cfg.min_silence_ms)
+        return vad, (lambda chunk: vad(torch.from_numpy(chunk), return_seconds=False))
 
     # ---- 引擎构建：返回 transcribe(audio_np) -> str ----
     def _build_engine(self) -> Callable[[np.ndarray], str]:
@@ -180,7 +288,7 @@ class DictationEngine:
                 lookback.append(chunk)
                 if len(lookback) > self.cfg.lookback_chunks:
                     lookback.pop(0)
-                event = self._vad(torch.from_numpy(chunk), return_seconds=False)
+                event = self._vad_infer(chunk)
                 if event and "start" in event:
                     collecting = True
                     speech = list(lookback)
