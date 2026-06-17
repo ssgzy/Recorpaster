@@ -1,21 +1,34 @@
 #!/usr/bin/env python3
 """
 配置读写层（UI 无关）
-- 持久化到 ~/Library/Application Support/Whisper听写/config.json，启动时读取。
+- 跨平台持久化到用户配置目录下的 config.json（Windows=%APPDATA%\\Recorpaster），启动时读取。
 - build_config() 把这里的设置映射成 engine.Config（改配置 = 重建 engine）。
 
-Phase 1 只用到一小部分（hotkey / hotkey_mode / output_mode），其余字段先给好默认值，
-Phase 2 的设置面板直接往这上面接即可，不必再改结构。
+只用到一小部分（hotkey / hotkey_mode / output_mode）即可跑核心闭环，其余字段给好默认值，
+设置面板直接往这上面接即可，不必再改结构。
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
-APP_NAME = "Whisper听写"
-CONFIG_DIR = Path.home() / "Library" / "Application Support" / APP_NAME
+APP_NAME = "Recorpaster"
+
+
+def _config_dir() -> Path:
+    """跨平台用户配置目录。Windows=%APPDATA%\\App；macOS/Linux 用各自约定。"""
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or str(Path.home())
+        return Path(base) / APP_NAME
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / APP_NAME
+    return Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / APP_NAME
+
+
+CONFIG_DIR = _config_dir()
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
 # —— 模型下拉项 → 两个引擎各自的真实标识 ——
@@ -33,10 +46,10 @@ MODEL_MAP = {
 }
 
 DEFAULTS = {
-    # —— Phase 1 实际使用 ——
-    "hotkey": "alt_r",          # pynput Key 名（右 Option，mac 上捕获稳定；别用 fn）
+    # —— 核心闭环实际使用 ——
+    "hotkey": "alt_r",          # pynput Key 名（右 Alt；可在设置里改成右 Ctrl/Shift/F6 等）
     "hotkey_mode": "hold",      # "hold"(长按推杆) | "toggle"(按一下开/再按关)
-    "output_mode": "paste",     # "paste"(剪贴板+Cmd+V 上屏) | "copy"(仅复制到剪贴板)
+    "output_mode": "paste",     # "paste"(剪贴板+Ctrl+V 上屏) | "copy"(仅复制到剪贴板)
 
     # —— 引擎相关（映射到 engine.Config；Phase 2 设置面板用）——
     "engine": "auto",           # "auto"(default_engine()) | "mlx" | "faster-whisper"

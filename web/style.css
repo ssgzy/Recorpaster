@@ -6,12 +6,14 @@
   --sub: rgba(255, 255, 255, 0.6);
   --bar-h: 18px;
 
-  /* —— Clear 玻璃参数（易调）—— */
+  /* —— 玻璃参数（易调）——
+     Windows 没有窗口背后的原生玻璃层，故 #bar 自带深色半透明底 + backdrop-filter，
+     无论窗口透明与否都清晰可见、文字可读（Win11 Mica/Acrylic 以后再说）。 */
   --glass-radius: 18px;
-  --glass-fill: rgba(255, 255, 255, 0.10);   /* 通透白底（Clear：低）*/
-  --glass-rim: rgba(255, 255, 255, 0.24);    /* 1px 亮边 */
-  --glass-sheen: rgba(255, 255, 255, 0.30);  /* 顶部镜面高光 */
-  --glass-shadow: 0 12px 40px rgba(0, 0, 0, 0.34);
+  --glass-fill: rgba(20, 20, 28, 0.66);      /* 自带深色半透底（保证可见）*/
+  --glass-rim: rgba(255, 255, 255, 0.18);    /* 1px 亮边 */
+  --glass-sheen: rgba(255, 255, 255, 0.16);  /* 顶部镜面高光 */
+  --glass-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -35,7 +37,9 @@ html, body {
   gap: 13px;
   padding: 0 22px;
   border-radius: var(--glass-radius);
-  background: var(--glass-fill);       /* 通透白底，强化 Clear 的明亮感 */
+  background: var(--glass-fill);       /* 深色半透底：无原生玻璃也清晰可见 */
+  backdrop-filter: blur(20px) saturate(1.3);          /* WebView2/Chromium 支持 */
+  -webkit-backdrop-filter: blur(20px) saturate(1.3);
   box-shadow:
     inset 0 1px 0 var(--glass-sheen),          /* 顶部镜面高光 */
     inset 0 0 0 1px var(--glass-rim),          /* 通透亮边 */

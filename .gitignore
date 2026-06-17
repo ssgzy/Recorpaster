@@ -55,3 +55,8 @@ build/
 dist/
 *.app/
 *.dmg
+# Windows 打包产物
+*.zip
+*.exe
+installer/Output/
+__pycache__/

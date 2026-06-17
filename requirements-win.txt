@@ -1,0 +1,15 @@
+# Windows 运行/打包依赖（Python 3.12）。faster-whisper 走 CPU（int8），不含 torch/mlx。
+# 传递依赖（自动装上，不必显式列）：
+#   faster-whisper → ctranslate2 / tokenizers / av(PyAV·ffmpeg) / huggingface_hub / onnxruntime
+#   pywebview      → pythonnet(clr) / proxy_tools / bottle   （Windows EdgeChromium 后端）
+#   pystray        → pillow / six
+faster-whisper
+onnxruntime
+sounddevice
+pynput
+pyperclip
+pywebview
+pystray
+pillow
+numpy
+huggingface_hub

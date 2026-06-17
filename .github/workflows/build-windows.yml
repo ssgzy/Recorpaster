@@ -1,0 +1,89 @@
+name: build-windows
+
+# 自动在 windows-latest 上打 EXE。推 main / 打 tag(v*) / 手动触发都会跑。
+on:
+  push:
+    branches: [ '**' ]     # 任意分支推送都构建（feature 分支也能在 CI 验证打包）
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 打 tag 时把产物挂到 Release 需要写权限
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: requirements-win.txt   # 否则 setup-python 找不到 requirements.txt 会直接报错
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-win.txt
+          pip install pyinstaller
+
+      - name: Build EXE (PyInstaller · onedir)
+        run: pyinstaller --noconfirm --clean Recorpaster-win.spec
+
+      - name: Sanity check (产物存在)
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/Recorpaster/Recorpaster.exe")) {
+            Write-Error "未生成 dist/Recorpaster/Recorpaster.exe"; exit 1
+          }
+          Get-ChildItem dist/Recorpaster | Select-Object -First 20 Name,Length
+
+      # 一起带上 WebView2 Evergreen 引导器（约 2MB）：clean Win10 无 WebView2 运行时时，
+      # 安装器会静默装上；zip 用户也可手动运行。失败不影响 zip 产物（Win11/CI 自带运行时）。
+      - name: Bundle WebView2 bootstrapper (optional)
+        continue-on-error: true
+        shell: pwsh
+        run: Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile "dist/Recorpaster/MicrosoftEdgeWebview2Setup.exe"
+
+      - name: Package zip
+        shell: pwsh
+        run: Compress-Archive -Path dist/Recorpaster/* -DestinationPath Recorpaster-windows-x64.zip -Force
+
+      - name: Upload artifact (zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Recorpaster-windows-x64
+          path: Recorpaster-windows-x64.zip
+          if-no-files-found: error
+
+      # —— 可选：Inno Setup 安装器（失败不影响上面的 zip 产物）——
+      - name: Build installer (Inno Setup · optional)
+        if: ${{ hashFiles('installer/Recorpaster.iss') != '' }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer/Recorpaster.iss
+
+      - name: Upload artifact (installer)
+        if: ${{ hashFiles('installer/Recorpaster.iss') != '' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: Recorpaster-setup
+          path: installer/Output/*.exe
+          if-no-files-found: ignore
+
+      # —— 打 tag(v*) 时把产物挂到 GitHub Release ——
+      - name: Attach to Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Recorpaster-windows-x64.zip
+            installer/Output/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
