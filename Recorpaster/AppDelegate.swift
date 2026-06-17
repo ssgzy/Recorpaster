@@ -11,6 +11,7 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: AppController?
     private var selfTestMic: MicCapture?
+    private var selfTestEngine: DictationEngine?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)   // 菜单栏 App，无 Dock 图标，不抢前台
@@ -21,11 +22,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runMicSelfTest()
             return
         }
+        // 开发自测：RECOR_PIPELINE_SELFTEST=1 → 加载模型 → 采集 ~4s → stop 触发整段转写，
+        // 验证「采集→transcribe→出字」整链路（打印 a/b/c/d），不需要热键或菜单。
+        if ProcessInfo.processInfo.environment["RECOR_PIPELINE_SELFTEST"] == "1" {
+            Task { await runPipelineSelfTest() }
+            return
+        }
 
         let controller = AppController()
         controller.start()
         self.controller = controller
         Log.info("Recorpaster 启动（accessory）。")
+    }
+
+    private func runPipelineSelfTest() async {
+        Log.info("PIPELINE SELFTEST：加载模型 → 采集 4s → 整段转写（请对麦说几句中文）…")
+        let output = TextOutput()
+        let engine = DictationEngine(
+            config: .default,
+            onResult: { r in
+                Log.info("PIPELINE SELFTEST onResult: \"\(r.text)\"（音频\(String(format: "%.1f", r.audioSec))s）")
+                output.enqueue(r.text, mode: .copy)   // 自测只复制，不往别处上屏
+            },
+            onStatus: { s in Log.info("PIPELINE SELFTEST status: \(s)") }
+        )
+        selfTestEngine = engine
+        await engine.loadModel()
+        guard engine.isReady else {
+            Log.error("PIPELINE SELFTEST：引擎未就绪，退出。")
+            NSApp.terminate(nil); return
+        }
+        do { try engine.start() } catch {
+            Log.error("PIPELINE SELFTEST：start 失败 \(error.localizedDescription)")
+            NSApp.terminate(nil); return
+        }
+        try? await Task.sleep(for: .seconds(4))
+        await engine.stop()
+        Log.info("PIPELINE SELFTEST 完成。")
+        NSApp.terminate(nil)
     }
 
     private func runMicSelfTest() {

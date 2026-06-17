@@ -61,10 +61,23 @@ final class AppController {
         Permissions.promptAccessibilityOnce()
         Permissions.requestInputMonitoringOnce()
 
+        // 打印三项权限状态，便于排查热键不触发。
+        let ax = Permissions.accessibilityTrusted()
+        let im = Permissions.inputMonitoringGranted()
+        let mic = Permissions.microphoneStatus().rawValue
+        Log.info("权限状态: 辅助功能=\(ax) 输入监控=\(im) 麦克风(rawValue)=\(mic)")
+
         // 启动全局热键 tap（缺权限会失败，看门狗会择机重试）
         hotkeyActive = hotKey.start()
         if !hotkeyActive {
-            Log.warn("热键 tap 启动失败（缺辅助功能/输入监控权限），授权后将自动重试。")
+            Log.warn("热键 tap 启动失败：右⌥ 热键需要『辅助功能 + 输入监控』权限（菜单手动开/停不受影响）。")
+            // 主动提示：缺权限的话热键用不了，引导去授权。
+            Task {
+                try? await Task.sleep(for: .seconds(1))
+                if !self.hotkeyActive {
+                    self.toast("右⌥ 热键需在『系统设置 · 隐私 · 辅助功能 + 输入监控』里勾选 Recorpaster（见菜单）", seconds: 5)
+                }
+            }
         }
 
         // 首次加载提示 + 加载模型

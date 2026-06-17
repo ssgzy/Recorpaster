@@ -50,6 +50,8 @@ nonisolated final class TextOutput: @unchecked Sendable {
     func enqueue(_ raw: String, mode: OutputMode) {
         let text = normalizeCJKPunct(raw)
         guard !text.isEmpty else { return }
+        // (d) 粘贴/复制前把要输出的文字打出来（标点规整后）。
+        Log.info("(d) 即将\(mode == .paste ? "上屏" : "复制"): \"\(text)\"")
         queue.async { [weak self] in
             switch mode {
             case .copy:

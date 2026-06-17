@@ -10,6 +10,9 @@
 //
 //  回调是 C 函数指针，跑在主 run loop（主线程）上；用 MainActor.assumeIsolated 安全回到主 actor。
 //
+//  ⚙️ 诊断：tap 创建结果、收到的每个 flagsChanged(keyCode/alt)、press/release 触发都打日志，
+//  便于排查「热键不触发」是没建 tap / 没收到事件 / keyCode 不对 / 还是 press-release 逻辑。
+//
 
 import AppKit
 import CoreGraphics
@@ -41,6 +44,7 @@ nonisolated final class HotKeyMonitor {
             callback: Self.eventCallback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
+            Log.warn("热键: CGEvent.tapCreate 返回 nil（缺辅助功能/输入监控权限）。")
             return false
         }
         self.tap = tap
@@ -48,6 +52,7 @@ nonisolated final class HotKeyMonitor {
         self.source = src
         CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        Log.ok("热键: tap 已创建、加入主 run loop 并 enable（监听 flagsChanged，目标 keyCode=\(keyCode)）。")
         return true
     }
 
@@ -79,23 +84,25 @@ nonisolated final class HotKeyMonitor {
     private func handle(type: CGEventType, event: CGEvent) {
         // 系统可能因超时/用户输入临时禁用 tap → 立即重新启用，保证热键长期可用。
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            Log.warn("热键: tap 被系统禁用（\(type == .tapDisabledByTimeout ? "timeout" : "userInput")），重新 enable。")
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
-            // 被禁用期间可能漏掉一次「松开」→ isDown 与真实键态失配、hold 模式卡在会话中
-            // （坑 #8 幻影会话：没按键却开着麦克风）。重启后用系统真实修饰键状态对账。
             reconcileModifierState()
             return
         }
         guard type == .flagsChanged else { return }
         let code = event.getIntegerValueField(.keyboardEventKeycode)
-        guard code == keyCode else { return }
-
-        // 该物理键变化：alt 标志现在为 on=按下、off=松开。去抖：只在状态真正翻转时触发。
         let alt = event.flags.contains(.maskAlternate)
+        // 诊断：每个 flagsChanged 都打（看事件是否到达 tap、keyCode 是否为 61）。
+        Log.info("热键: flagsChanged keyCode=\(code) alt=\(alt)（目标=\(keyCode)）")
+
+        guard code == keyCode else { return }
         if alt && !isDown {
             isDown = true
+            Log.ok("热键: 右⌥ 按下 → onPress")
             MainActor.assumeIsolated { onPress?() }
         } else if !alt && isDown {
             isDown = false
+            Log.info("热键: 右⌥ 松开 → onRelease")
             MainActor.assumeIsolated { onRelease?() }
         }
     }
