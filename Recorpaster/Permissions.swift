@@ -18,10 +18,6 @@ import IOKit.hid
 
 @MainActor
 enum Permissions {
-    private static let defaults = UserDefaults.standard
-    private static let kPromptedAX = "didPromptAccessibility"
-    private static let kPromptedIM = "didPromptInputMonitoring"
-
     // MARK: 麦克风
 
     static func microphoneStatus() -> AVAuthorizationStatus {
@@ -50,10 +46,12 @@ enum Permissions {
         AXIsProcessTrusted()
     }
 
-    /// 引导一次：带系统弹窗 + 引导到设置。仅首次调用真正弹，之后是空操作。
-    static func promptAccessibilityOnce() {
-        guard !defaults.bool(forKey: kPromptedAX) else { return }
-        defaults.set(true, forKey: kPromptedAX)
+    /// 未授时**真正触发系统弹窗**并把 app 加进「辅助功能」列表。已授时是空操作。
+    /// 不再用 UserDefaults 守卫——`AXIsProcessTrustedWithOptions(prompt:true)` 由系统自身去重：
+    /// 首次弹一次对话框、把 app 写进列表，之后同一进程/再次启动只静默返回当前信任态（不会反复刷屏）。
+    /// 每次启动至多调用一次（在 AppController.start 里），故绝不构成「循环弹窗」。
+    static func promptAccessibilityIfNeeded() {
+        guard !accessibilityTrusted() else { return }
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
     }
@@ -64,13 +62,10 @@ enum Permissions {
         IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
     }
 
-    /// 引导一次：未决定时请求一次（系统弹窗）。已决定/已引导则不再弹。
-    static func requestInputMonitoringOnce() {
-        guard !defaults.bool(forKey: kPromptedIM) else { return }
-        defaults.set(true, forKey: kPromptedIM)
-        if IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) != kIOHIDAccessTypeGranted {
-            _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
-        }
+    /// 未授时请求一次：notDetermined 系统弹窗 + 加进「输入监控」列表；denied/granted 则静默返回（不弹）。
+    static func requestInputMonitoringIfNeeded() {
+        guard !inputMonitoringGranted() else { return }
+        _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
     }
 
     // MARK: 汇总 + 打开系统设置

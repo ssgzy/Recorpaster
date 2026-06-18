@@ -45,19 +45,26 @@ func normalizeCJKPunct(_ text: String) -> String {
 
 nonisolated final class TextOutput: @unchecked Sendable {
     private let queue = DispatchQueue(label: "io.sam.Recorpaster.output")
+    private let restorer = PunctuationRestorer()
 
-    /// 入队一段文本，按 mode 上屏或复制。先做标点规整。
+    /// 后台准备标点模型（按需下载 + 编译 + 加载），避免首句上屏时才加载导致卡顿；失败则降级无标点。
+    func preloadPunctuation() {
+        Task.detached { [restorer] in await restorer.prepare() }
+    }
+
+    /// 入队一段文本，按 mode 上屏或复制。标点恢复 + 规整都在串行队列（off-main、按入队有序）。
     func enqueue(_ raw: String, mode: OutputMode) {
-        let text = normalizeCJKPunct(raw)
-        guard !text.isEmpty else { return }
-        // (d) 粘贴/复制前把要输出的文字打出来（标点规整后）。
-        Log.info("(d) 即将\(mode == .paste ? "上屏" : "复制"): \"\(text)\"")
+        guard !raw.isEmpty else { return }
         queue.async { [weak self] in
+            guard let self else { return }
+            let punctuated = self.restorer.restore(raw)   // 先补中文标点（CoreML 后处理）
+            let text = normalizeCJKPunct(punctuated)      // 再把残留 ASCII 标点在 CJK 间转全角
+            guard !text.isEmpty else { return }
+            // (d) 粘贴/复制前把最终文字打出来。
+            Log.info("(d) 即将\(mode == .paste ? "上屏" : "复制"): \"\(text)\"")
             switch mode {
-            case .copy:
-                _ = Self.setClipboard(text)
-            case .paste:
-                self?.paste(text)
+            case .copy:  _ = Self.setClipboard(text)
+            case .paste: self.paste(text)
             }
         }
     }
@@ -69,12 +76,16 @@ nonisolated final class TextOutput: @unchecked Sendable {
         let myCount = Self.setClipboard(text)       // 记录我们这次写入后的 changeCount
         Thread.sleep(forTimeInterval: 0.05)         // 等剪贴板写入稳定
         Self.postCommandV()
-        Thread.sleep(forTimeInterval: 0.18)         // 等粘贴动作被目标 App 消费
-        // 仅当剪贴板自我们写入后**未被改动**才还原：
-        //  · 若用户/其它 App 期间复制了别的东西（changeCount 变了）→ 不还原，避免覆盖用户的复制；
-        //  · 也避免在目标 App 尚未消费粘贴时就把旧内容塞回去导致粘错（宁可把识别文本留在剪贴板）。
-        if pb.changeCount == myCount, let prev {
+        // 等粘贴动作被目标 App 真正消费再还原；0.25s 比 0.18s 更稳地避开「还没粘完就塞回旧值」。
+        Thread.sleep(forTimeInterval: 0.25)
+        // 仅当剪贴板自我们写入后**未被改动**、且旧值确有内容且不同于本次文本时才还原：
+        //  · changeCount 变了 → 期间有人改了剪贴板 → 不还原，避免覆盖用户的复制（明确记日志，不静默）。
+        //  · prev == text（罕见）→ 无需还原。
+        guard let prev, prev != text else { return }
+        if pb.changeCount == myCount {
             _ = Self.setClipboard(prev)
+        } else {
+            Log.info("剪贴板期间被改动（changeCount \(myCount)→\(pb.changeCount)），跳过还原以免覆盖用户复制。")
         }
     }
 
@@ -87,13 +98,15 @@ nonisolated final class TextOutput: @unchecked Sendable {
     }
 
     /// 用 CGEvent 投递 ⌘V（虚拟键码 9 = 'v'）。需要「辅助功能」权限才能落到其它 App。
+    /// 关键：用 `.privateState` 事件源——它的修饰键状态**独立于硬件/会话**，故即便用户此刻正物理按住
+    /// 右 ⌥（hold 模式触发键），合成事件也只带 .maskCommand，不会被并成 ⌘⌥V。
     private static func postCommandV() {
-        let src = CGEventSource(stateID: .combinedSessionState)
+        let src = CGEventSource(stateID: .privateState)
         let vKey: CGKeyCode = 9
         let down = CGEvent(keyboardEventSource: src, virtualKey: vKey, keyDown: true)
         down?.flags = .maskCommand
         let up = CGEvent(keyboardEventSource: src, virtualKey: vKey, keyDown: false)
-        up?.flags = .maskCommand
+        up?.flags = []          // 抬起时清空修饰键，避免残留 Command 影响后续输入
         down?.post(tap: .cghidEventTap)
         up?.post(tap: .cghidEventTap)
     }

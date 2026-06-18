@@ -54,6 +54,12 @@ final class DictationEngine {
     private var recording = false
     private var stopping = false               // 防止 stop() 重入（endSession 与 quit 可能并发）
 
+    // 内存封顶：单次会话最多保留 maxSessionSec 秒音频（16kHz×4B ≈ 64KB/s → 180s ≈ 11.5MB）。
+    // 超出按滑窗丢弃最早样本，防极端长按把 [Float] 撑爆（正常按几秒~几十秒绝不触发）。
+    private static let maxSessionSec = 180
+    private var maxSessionSamples: Int { AudioConstants.sampleRate * Self.maxSessionSec }
+    private var didWarnCap = false
+
     init(config: Config,
          onResult: @escaping @MainActor (DictationResult) -> Void,
          onStatus: @escaping @MainActor (EngineStatus) -> Void) {
@@ -78,10 +84,11 @@ final class DictationEngine {
             let wk = try await WhisperKit(wkConfig)
             self.whisperKit = wk
 
+            // 仅供 dev A/B 自测（RECOR_WAV_FILE）复核 prompt 行为；生产路径不喂（turbo 吃 prompt 会塌成空）。
             if !config.initialPrompt.isEmpty, let tok = wk.tokenizer {
                 let begin = tok.specialTokens.specialTokenBegin
                 promptTokens = tok.encode(text: " " + config.initialPrompt).filter { $0 < begin }
-                Log.info("标点风格 prompt tokens=\(promptTokens.count) 个")
+                Log.info("标点风格 prompt tokens=\(promptTokens.count) 个（仅诊断用，生产不喂）")
             }
             isReady = true
             onStatus(.ready)
@@ -107,6 +114,7 @@ final class DictationEngine {
     func start() throws {
         guard isReady, !recording else { return }
         sessionSamples.removeAll(keepingCapacity: true)
+        didWarnCap = false
         meterCount = 0
         meterSum = 0
         meterStart = Date()
@@ -117,6 +125,13 @@ final class DictationEngine {
                 DispatchQueue.main.async {
                     guard let self, self.recording else { return }
                     self.sessionSamples.append(contentsOf: delta)
+                    if self.sessionSamples.count > self.maxSessionSamples {
+                        self.sessionSamples.removeFirst(self.sessionSamples.count - self.maxSessionSamples)
+                        if !self.didWarnCap {
+                            self.didWarnCap = true
+                            Log.warn("会话超 \(Self.maxSessionSec)s 上限，已滑窗丢弃最早音频以封顶内存（整段转写不含最早部分）。")
+                        }
+                    }
                     self.meter(delta)
                 }
             }
@@ -168,7 +183,7 @@ final class DictationEngine {
         }
     }
 
-    // MARK: - 整段转写（MVP）
+    // MARK: - 整段转写（MVP）+ 🔬 诊断插桩
 
     private func transcribeWhole() async {
         let audio = sessionSamples                     // 16kHz / mono / Float32 数组（WhisperKit 要的形式）
@@ -181,28 +196,38 @@ final class DictationEngine {
             Log.warn("(a) 音频过短（\(String(format: "%.2f", dur))s < \(config.minUtterSec)s），跳过转写")
             return
         }
-        guard let wk = whisperKit else {
-            Log.error("(b) whisperKit 未就绪，无法转写")
-            return
+        guard let wk = whisperKit else { Log.error("(b) whisperKit 未就绪，无法转写"); return }
+
+        // 隐私：默认绝不写盘。仅 RECOR_DUMP_WAV=1 时把这段 buffer dump 到 /tmp 供人工试听（dev）。
+        if ProcessInfo.processInfo.environment["RECOR_DUMP_WAV"] == "1" {
+            DebugAudio.writeWAV(audio, to: "/tmp/recor_debug.wav")
         }
 
         var opts = DecodingOptions()
         opts.language = config.language
         opts.temperature = 0
         opts.usePrefillPrompt = true
-        opts.promptTokens = promptTokens.isEmpty ? nil : promptTokens
+        // ⚠️ 不喂 promptTokens：large-v3-turbo 只要吃到 <|startofprev|> 前文就立即 EOT → 整段空。
+        //（已用已知 WAV 复现：任意 prompt 内容/temperature/时间戳都塌；唯一恢复输出=不喂 prompt。）
+        //  标点改靠模型原生输出；如换非-turbo 模型可在此恢复 opts.promptTokens = promptTokens。
+        opts.promptTokens = nil
         opts.detectLanguage = false
         opts.skipSpecialTokens = true
         opts.withoutTimestamps = true
 
         // (b) 何时调 transcribe
-        Log.info("(b) 调用 WhisperKit.transcribe …（MVP：停止即整段转写，language=\(config.language ?? "auto")）")
+        Log.info("(b) 调用 WhisperKit.transcribe …（整段转写，language=\(config.language ?? "auto")，原生标点）")
         let t0 = Date()
         do {
             let results = try await wk.transcribe(audioArray: audio, decodeOptions: opts)
+            let cost = Date().timeIntervalSince(t0)
             let raw = results.map(\.text).joined()
             let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            let cost = Date().timeIntervalSince(t0)
+            for r in results {
+                for s in r.segments {
+                    Log.info("(c) seg#\(s.id) avgLogprob=\(String(format: "%.3f", s.avgLogprob)) noSpeechProb=\(String(format: "%.3f", s.noSpeechProb)) compRatio=\(String(format: "%.2f", s.compressionRatio)) tokens=\(s.tokens.count)")
+                }
+            }
             // (c) transcribe 返回什么（空也打）
             Log.info("(c) transcribe 返回: \"\(raw)\"（segments=\(results.count), 耗时\(String(format: "%.2f", cost))s, RTF=\(String(format: "%.2f", dur > 0 ? cost / dur : 0))）")
             guard !text.isEmpty else {
@@ -211,8 +236,79 @@ final class DictationEngine {
             }
             onResult(DictationResult(text: text, audioSec: dur, costSec: cost))
         } catch {
-            // (c) 报错绝不静默吞
             Log.error("(c) transcribe 抛错: \(error)")
+        }
+    }
+
+    // MARK: - 🔬 诊断转写（同段音频跑两遍：A=带标点 prompt / B=不带 prompt）
+
+    /// 定位「拿到音频却返回空」：A 空而 B 非空 ⇒ 标点 prompt tokens 喂坏解码；A/B 都空 ⇒ 查音频或用法。
+    /// 每遍打印完整 DecodingOptions + 每个 segment 的 avgLogprob/noSpeechProb/compressionRatio/temperature/tokens/text。
+    @discardableResult
+    func diagnosticTranscribe(_ audio: [Float], label: String) async -> (text: String, cost: Double)? {
+        guard let wk = whisperKit else { Log.error("[\(label)] whisperKit 未就绪，无法转写"); return nil }
+
+        // 先把 prompt 本身解码回文本，确认编码没坏。
+        if let tok = wk.tokenizer {
+            let decoded = promptTokens.isEmpty ? "(空)" : tok.decode(tokens: promptTokens)
+            Log.info("[\(label)] 标点 promptTokens=\(promptTokens.count) 个 → 解码=\"\(decoded)\" 头16=\(Array(promptTokens.prefix(16)))")
+        }
+
+        let a = await runPass(wk, audio, withPrompt: true,  label: "\(label)·A带prompt")
+        let b = await runPass(wk, audio, withPrompt: false, label: "\(label)·B无prompt")
+
+        let at = (a?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let bt = (b?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if at.isEmpty, !bt.isEmpty {
+            Log.warn("🔬 倾向结论：带 prompt 空、去 prompt 出字 ⇒ **标点 prompt tokens 喂坏了解码**（与怀疑高度吻合）。")
+            return (bt, b?.cost ?? 0)
+        }
+        if at.isEmpty, bt.isEmpty {
+            Log.warn("🔬 倾向结论：A/B 都空 ⇒ 不是 prompt 问题；听 /tmp/recor_debug.wav 判断音频，或查 WhisperKit 用法。")
+            return nil
+        }
+        if !at.isEmpty, bt.isEmpty {
+            Log.info("🔬 注意：带 prompt 出字、去 prompt 反而空（少见）。")
+        }
+        return (at, a?.cost ?? 0)
+    }
+
+    /// 单遍转写 + 打印原始 segments（不只 .text）。
+    private func runPass(_ wk: WhisperKit, _ audio: [Float], withPrompt: Bool, label: String)
+        async -> (text: String, cost: Double)? {
+        var opts = DecodingOptions()
+        opts.language = config.language
+        opts.temperature = 0
+        opts.usePrefillPrompt = true
+        opts.promptTokens = withPrompt ? (promptTokens.isEmpty ? nil : promptTokens) : nil
+        opts.detectLanguage = false
+        opts.skipSpecialTokens = true
+        opts.withoutTimestamps = true
+
+        // 🔬 调试开关：扫「保住 prompt 不塌」的组合（仅诊断用）。
+        let env = ProcessInfo.processInfo.environment
+        if let t = env["RECOR_TEMP"], let tv = Float(t) { opts.temperature = tv }
+        if env["RECOR_TS"] == "1" { opts.withoutTimestamps = false }     // 开启时间戳
+        if env["RECOR_PREFILL"] == "0" { opts.usePrefillPrompt = false } // 关 prefill prompt
+
+        let dur = Double(audio.count) / Double(AudioConstants.sampleRate)
+        Log.info("[\(label)] DecodingOptions: language=\(opts.language ?? "nil") temperature=\(opts.temperature) usePrefillPrompt=\(opts.usePrefillPrompt) promptTokens=\(opts.promptTokens?.count ?? 0) detectLanguage=\(opts.detectLanguage) skipSpecialTokens=\(opts.skipSpecialTokens) withoutTimestamps=\(opts.withoutTimestamps)")
+        let t0 = Date()
+        do {
+            let results = try await wk.transcribe(audioArray: audio, decodeOptions: opts)
+            let cost = Date().timeIntervalSince(t0)
+            let raw = results.map(\.text).joined()
+            Log.info("[\(label)] 返回 text=\"\(raw)\"（results=\(results.count), 耗时\(String(format: "%.2f", cost))s, RTF=\(String(format: "%.2f", dur > 0 ? cost / dur : 0))）")
+            for (i, r) in results.enumerated() {
+                Log.info("[\(label)]   result#\(i) lang=\(r.language) segments=\(r.segments.count)")
+                for s in r.segments {
+                    Log.info("[\(label)]     seg#\(s.id) t=[\(String(format: "%.2f", s.start))~\(String(format: "%.2f", s.end))] avgLogprob=\(String(format: "%.3f", s.avgLogprob)) noSpeechProb=\(String(format: "%.3f", s.noSpeechProb)) compRatio=\(String(format: "%.2f", s.compressionRatio)) temp=\(String(format: "%.1f", s.temperature)) tokens=\(s.tokens.count) text=\"\(s.text)\"")
+                }
+            }
+            return (raw, cost)
+        } catch {
+            Log.error("[\(label)] transcribe 抛错: \(error)")
+            return nil
         }
     }
 }

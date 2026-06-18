@@ -54,8 +54,8 @@ struct Config {
     static let `default` = Config()
 }
 
-/// 引擎层公用常量（与 engine.py 对齐）。
+/// 引擎层公用常量（与 engine.py 对齐）。nonisolated：供音频线程等非 MainActor 上下文直接引用。
 enum AudioConstants {
-    static let sampleRate = 16_000          // WhisperKit 固定 16kHz
-    static let chunk = 512                  // 每帧 512 样本（32ms），与 silero/engine.py 一致
+    nonisolated static let sampleRate = 16_000   // WhisperKit 固定 16kHz
+    nonisolated static let chunk = 512           // 每帧 512 样本（32ms），与 silero/engine.py 一致
 }

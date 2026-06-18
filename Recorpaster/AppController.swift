@@ -57,9 +57,9 @@ final class AppController {
         hotKey.onPress = { [weak self] in self?.handlePress() }
         hotKey.onRelease = { [weak self] in self?.handleRelease() }
 
-        // 权限：各引导一次（之后看门狗只轮询，不再弹）
-        Permissions.promptAccessibilityOnce()
-        Permissions.requestInputMonitoringOnce()
+        // 权限：缺啥真正弹啥的系统框 + 加进 TCC 列表（OS 自身去重，不会反复刷屏；之后看门狗只轮询）
+        Permissions.promptAccessibilityIfNeeded()
+        Permissions.requestInputMonitoringIfNeeded()
 
         // 打印三项权限状态，便于排查热键不触发。
         let ax = Permissions.accessibilityTrusted()
@@ -84,6 +84,7 @@ final class AppController {
         let firstRun = !UserDefaults.standard.bool(forKey: firstRunKey)
         showLoading(firstRun ? "首次运行 · 下载模型中…（约 1.5GB，请保持联网）" : "加载模型中…")
         Task { await engine.loadModel() }
+        textOutput.preloadPunctuation()   // 后台预热中文标点模型，首句上屏不卡
 
         startPermissionWatchdog()
         refreshIdleIcon()
@@ -209,7 +210,17 @@ final class AppController {
     private func handleResult(_ r: DictationResult) {
         Log.info("📝 \(r.text)  (音频 \(String(format: "%.1f", r.audioSec))s · 识别 \(String(format: "%.2f", r.costSec))s · RTF \(String(format: "%.2f", r.rtf)))")
         floating.model.text = r.text                 // 实时展示最新一句
-        textOutput.enqueue(r.text, mode: config.outputMode)   // 上屏 / 复制（已含标点规整）
+
+        // 上屏前的硬闸门：paste 模式靠合成 ⌘V 落到其它 App，需要『辅助功能』权限。
+        // 缺权限时绝不静默走 (d)（⌘V 发不出、文字凭空消失）→ 明说失败 + 退回仅复制（保住文字，可手动 ⌘V）+ ⚠️。
+        var mode = config.outputMode
+        if mode == .paste && !Permissions.accessibilityTrusted() {
+            Log.error("上屏失败：缺『辅助功能』权限，合成 ⌘V 无法落到其它 App → 退回仅复制。")
+            statusItem.setPermissionWarning(true)
+            toast("上屏失败：缺辅助功能权限（已复制到剪贴板，可手动 ⌘V）· 见菜单", seconds: 4)
+            mode = .copy
+        }
+        textOutput.enqueue(r.text, mode: mode)   // 上屏 / 复制（已含标点规整）
     }
 
     private func handleStatus(_ s: EngineStatus) {

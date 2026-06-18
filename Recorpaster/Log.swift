@@ -8,8 +8,9 @@
 
 import Foundation
 
+// 日志线程安全（NSLock + FileHandle），全程 nonisolated，可从任意线程/actor 调用（音频线程、下载任务等）。
 enum Log {
-    nonisolated(unsafe) private static let fileHandle: FileHandle? = {
+    nonisolated private static let fileHandle: FileHandle? = {
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs", isDirectory: true)
         let url = dir.appendingPathComponent("Recorpaster.log")
@@ -17,13 +18,13 @@ enum Log {
             FileManager.default.createFile(atPath: url.path, contents: nil)
         }
         let h = try? FileHandle(forWritingTo: url)
-        try? h?.seekToEnd()
+        _ = try? h?.seekToEnd()
         return h
     }()
 
-    private static let lock = NSLock()
+    nonisolated private static let lock = NSLock()
 
-    static func line(_ message: String) {
+    nonisolated static func line(_ message: String) {
         let stamp = ISO8601DateFormatter().string(from: Date())
         let text = "[\(stamp)] \(message)\n"
         print(message)
@@ -33,8 +34,8 @@ enum Log {
         }
     }
 
-    static func info(_ m: String)  { line("ℹ️ \(m)") }
-    static func warn(_ m: String)  { line("⚠️ \(m)") }
-    static func error(_ m: String) { line("❌ \(m)") }
-    static func ok(_ m: String)    { line("✅ \(m)") }
+    nonisolated static func info(_ m: String)  { line("ℹ️ \(m)") }
+    nonisolated static func warn(_ m: String)  { line("⚠️ \(m)") }
+    nonisolated static func error(_ m: String) { line("❌ \(m)") }
+    nonisolated static func ok(_ m: String)    { line("✅ \(m)") }
 }
