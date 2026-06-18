@@ -71,15 +71,9 @@ struct FloatingView: View {
         .padding(.vertical, 13)
         .frame(minWidth: 96)
         .glassCapsule(preview: previewStatic)
-        .overlay(
-            Capsule().strokeBorder(
-                LinearGradient(colors: [.white.opacity(0.5), .white.opacity(0.06), .white.opacity(0.18)],
-                               startPoint: .top, endPoint: .bottom),
-                lineWidth: 0.8)
-        )
-        .shadow(color: .black.opacity(0.28), radius: 16, y: 7)
-        .shadow(color: (model.isListening ? Color.accentColor : .clear)
-            .opacity(breathe ? 0.30 : 0.14), radius: 22, y: 0)   // 柔光呼吸
+        // 单颗干净玻璃药丸：不要外圈描边/线框。只留它自身柔和均匀的悬浮投影。
+        // 呼吸 = 投影透明度 + 半径的均匀起伏（配合外层 1.0↔1.03 缩放），完全对称、无硬边。
+        .shadow(color: .black.opacity(breathe ? 0.34 : 0.24), radius: breathe ? 20 : 15, y: 8)
         .animation(.spring(response: 0.42, dampingFraction: 0.78), value: hasText)
         .animation(.spring(response: 0.42, dampingFraction: 0.78), value: showStatus)
     }

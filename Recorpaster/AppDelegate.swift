@@ -96,14 +96,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             FloatingView(model: m1, previewStatic: true).frame(width: 640, height: 150)
             FloatingView(model: m2, previewStatic: true).frame(width: 640, height: 150)
         }
-        .background(
-            LinearGradient(colors: [Color(red: 0.08, green: 0.10, blue: 0.18),
-                                    Color(red: 0.40, green: 0.18, blue: 0.34),
-                                    Color(red: 0.12, green: 0.34, blue: 0.40)],
-                           startPoint: .topLeading, endPoint: .bottomTrailing)
-        )
-        .environment(\.colorScheme, .dark)
-        let renderer = ImageRenderer(content: content)
+        let light = ProcessInfo.processInfo.environment["RECOR_HUD_LIGHT"] == "1"
+        let darkBG = LinearGradient(colors: [Color(red: 0.08, green: 0.10, blue: 0.18),
+                                             Color(red: 0.40, green: 0.18, blue: 0.34),
+                                             Color(red: 0.12, green: 0.34, blue: 0.40)],
+                                    startPoint: .topLeading, endPoint: .bottomTrailing)
+        let lightBG = LinearGradient(colors: [Color(white: 0.98), Color(white: 0.86), Color(white: 0.92)],
+                                     startPoint: .topLeading, endPoint: .bottomTrailing)
+        let themed = content
+            .background(light ? lightBG : darkBG)
+            .environment(\.colorScheme, light ? .light : .dark)
+        let renderer = ImageRenderer(content: themed)
         renderer.scale = 2
         if let img = renderer.nsImage, let tiff = img.tiffRepresentation,
            let bmp = NSBitmapImageRep(data: tiff), let png = bmp.representation(using: .png, properties: [:]) {
