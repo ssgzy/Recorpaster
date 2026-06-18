@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -39,6 +40,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { await runPunctSelfTest() }
             return
         }
+        // 🎨 HUD 预览：RECOR_HUD_PREVIEW=1 → 独立显示聆听条 + 模拟 RMS 律动 + 逐字喂文字（截图调样式用）。
+        if ProcessInfo.processInfo.environment["RECOR_HUD_PREVIEW"] == "1" {
+            runHudPreview()
+            return
+        }
+        // 🎨 HUD 离屏渲染：RECOR_HUD_RENDER=/path.png → ImageRenderer 把聆听条画成 PNG（不需屏幕录制权限）。
+        if let p = ProcessInfo.processInfo.environment["RECOR_HUD_RENDER"], !p.isEmpty {
+            renderHud(to: p); return
+        }
 
         let controller = AppController()
         controller.start()
@@ -71,6 +81,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         await engine.stop()
         Log.info("PIPELINE SELFTEST 完成。")
         NSApp.terminate(nil)
+    }
+
+    private func hudModel(_ level: Float, _ text: String) -> FloatingModel {
+        let m = FloatingModel(); m.isListening = true; m.level = level; m.text = text; return m
+    }
+
+    private func renderHud(to path: String) {
+        // 纵向叠三种状态，叠在渐变背景上看玻璃/构图。
+        let m0 = hudModel(0, ""), m1 = hudModel(0.05, "你好，今天天气不错")
+        let m2 = hudModel(0.02, "你好，今天天气不错，我们一起去公园散步吧")
+        let content = VStack(spacing: 0) {
+            FloatingView(model: m0, previewStatic: true).frame(width: 640, height: 150)
+            FloatingView(model: m1, previewStatic: true).frame(width: 640, height: 150)
+            FloatingView(model: m2, previewStatic: true).frame(width: 640, height: 150)
+        }
+        .background(
+            LinearGradient(colors: [Color(red: 0.08, green: 0.10, blue: 0.18),
+                                    Color(red: 0.40, green: 0.18, blue: 0.34),
+                                    Color(red: 0.12, green: 0.34, blue: 0.40)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+        )
+        .environment(\.colorScheme, .dark)
+        let renderer = ImageRenderer(content: content)
+        renderer.scale = 2
+        if let img = renderer.nsImage, let tiff = img.tiffRepresentation,
+           let bmp = NSBitmapImageRep(data: tiff), let png = bmp.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: path))
+            Log.info("HUD RENDER 写入 \(path)")
+        } else {
+            Log.error("HUD RENDER 失败")
+        }
+        NSApp.terminate(nil)
+    }
+
+    private var previewHud: FloatingPanelController?
+    private var previewTimer: Timer?
+    private func runHudPreview() {
+        let fp = FloatingPanelController()
+        previewHud = fp
+        fp.model.isListening = true
+        fp.setVisible(true)
+        let sample = Array("你好，今天天气不错，我们一起去公园散步吧")
+        var t = 0.0
+        var shown = 0
+        previewTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                t += 0.08
+                // 模拟说话的 RMS 起伏（多正弦叠加 + 偶发停顿）
+                let env = max(0, 0.55 + 0.45 * sin(t * 2.1) + 0.25 * sin(t * 5.3))
+                fp.model.level = Float(0.06 * env * env)
+                if shown < sample.count, Int(t / 0.16) > shown {
+                    shown += 1
+                    fp.model.text = String(sample.prefix(shown))
+                }
+                if t > 12 { shown = 0; fp.model.text = ""; t = 0 }   // 循环重放
+            }
+        }
+        Log.info("HUD PREVIEW 运行中（截图后 Ctrl-C 退出）。")
     }
 
     private func runPunctSelfTest() async {

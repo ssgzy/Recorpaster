@@ -38,6 +38,8 @@ final class DictationEngine {
     private let config: Config
     private let onResult: @MainActor (DictationResult) -> Void
     private let onStatus: @MainActor (EngineStatus) -> Void
+    /// 实时电平回调（每个采集 buffer 一次，~10-12/s 的瞬时 RMS）。供浮窗律动用，可选设置。
+    var onLevel: (@MainActor (Float) -> Void)?
 
     private var whisperKit: WhisperKit?
     private(set) var isReady = false
@@ -133,6 +135,11 @@ final class DictationEngine {
                         }
                     }
                     self.meter(delta)
+                    if let onLevel = self.onLevel, !delta.isEmpty {
+                        var s: Float = 0
+                        for v in delta { s += v * v }
+                        onLevel((s / Float(delta.count)).squareRoot())
+                    }
                 }
             }
         } catch {

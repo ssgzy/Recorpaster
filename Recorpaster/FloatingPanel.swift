@@ -24,7 +24,8 @@ final class FloatingPanel: NSPanel {
 final class FloatingPanelController {
     let model = FloatingModel()
     private let panel: FloatingPanel
-    private let size = NSSize(width: 480, height: 64)
+    // 画布比胶囊大：容纳呼吸缩放、柔光、阴影、底部留白（胶囊在其内底部居中）。
+    private let size = NSSize(width: 640, height: 150)
     private var epoch = 0
 
     init() {
@@ -58,19 +59,21 @@ final class FloatingPanelController {
         if visible {
             positionOnActiveScreen()
             panel.orderFrontRegardless()         // 关键：不激活本 App、不抢焦点
+            model.presented = true               // 触发 SwiftUI 弹簧放大 + 淡入
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.14
+                ctx.duration = 0.16
                 panel.animator().alphaValue = 1
             }
         } else {
+            model.presented = false              // 触发 SwiftUI 缩小淡出
             NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = 0.18
+                ctx.duration = 0.30              // 比弹簧缩小略长，让缩小动画读得出来
                 panel.animator().alphaValue = 0
             }, completionHandler: { [weak self] in
-                guard let self else { return }
-                // epoch 复检：淡出途中若又有「显示」（epoch 自增），放弃这次隐藏，避免卡住隐藏态。
-                if self.epoch == e {
-                    self.panel.orderOut(nil)
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    // epoch 复检：淡出途中若又有「显示」（epoch 自增），放弃这次隐藏，避免卡住隐藏态。
+                    if self.epoch == e { self.panel.orderOut(nil) }
                 }
             })
         }
@@ -82,7 +85,7 @@ final class FloatingPanelController {
             ?? NSScreen.main
         guard let visible = screen?.visibleFrame else { return }
         let x = visible.midX - size.width / 2
-        let y = visible.minY + 48                // 距屏幕可见区底部 48pt
+        let y = visible.minY + 8                 // 胶囊由 SwiftUI 底部留白抬到距屏底 ~38pt
         panel.setFrameOrigin(NSPoint(x: x, y: y))
     }
 }

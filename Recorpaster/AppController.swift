@@ -57,6 +57,9 @@ final class AppController {
         hotKey.onPress = { [weak self] in self?.handlePress() }
         hotKey.onRelease = { [weak self] in self?.handleRelease() }
 
+        // 实时电平 → 浮窗律动
+        engine.onLevel = { [weak self] lvl in self?.floating.model.level = lvl }
+
         // 权限：缺啥真正弹啥的系统框 + 加进 TCC 列表（OS 自身去重，不会反复刷屏；之后看门狗只轮询）
         Permissions.promptAccessibilityIfNeeded()
         Permissions.requestInputMonitoringIfNeeded()
@@ -155,6 +158,7 @@ final class AppController {
     private func endSession() {
         // 松开：浮窗立即淡出（与引擎收尾解耦），无论引擎处于什么状态。
         floating.model.isListening = false
+        floating.model.level = 0
         floating.setVisible(false)
 
         switch state {
