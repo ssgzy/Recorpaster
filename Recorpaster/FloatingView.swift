@@ -21,36 +21,44 @@ final class FloatingModel: ObservableObject {
 struct FloatingView: View {
     @ObservedObject var model: FloatingModel
     var previewStatic = false                  // ImageRenderer 静态渲染（调样式用）
-
-    // 呼吸（缓慢缩放 + 柔光起伏，~2.5s）
-    @State private var breathe = false
+    var accent: Color = .accentColor           // 单一可覆盖配色（Phase 2 设置接入）
 
     private var hasText: Bool { !model.text.isEmpty }
     private var showStatus: Bool { !model.statusLine.isEmpty && !hasText }
     private var shown: Bool { previewStatic || model.presented }
-
-    var body: some View {
-        // 底部留白：胶囊靠近屏幕底部，呼吸/柔光向上扩展。
-        VStack {
-            Spacer(minLength: 0)
-            capsule
-                .scaleEffect(breathe ? 1.03 : 1.0)
-                .animation(.easeInOut(duration: 2.5).repeatForever(autoreverses: true), value: breathe)
-                // 出现/消失：弹簧放大 + 从底部淡入 / 缩小淡出
-                .scaleEffect(shown ? 1.0 : 0.84, anchor: .bottom)
-                .offset(y: shown ? 0 : 18)
-                .opacity(shown ? 1 : 0)
-                .animation(.spring(response: 0.40, dampingFraction: 0.72), value: model.presented)
-                .padding(.bottom, 30)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear { breathe = model.isListening }
-        .onChange(of: model.isListening) { _, on in breathe = on }
+    // 已被引擎包络平滑的 RMS → 0..1 感知强度（安静≈0，正常说话≈0.4-0.9）。
+    private var intensity: CGFloat {
+        guard model.isListening else { return 0 }
+        return min(1, CGFloat((max(0, model.level) * 9).squareRoot()))
     }
 
-    private var capsule: some View {
+    var body: some View {
+        // TimelineView 驱动 60fps 连续呼吸；呼吸幅度 + 脉冲随 RMS 联动。静态/非聆听时暂停（省电、不动）。
+        TimelineView(.animation(paused: previewStatic || !model.isListening)) { tl in
+            let phase = CGFloat(0.5 + 0.5 * sin(tl.date.timeIntervalSinceReferenceDate * (.pi * 2 / 2.6)))
+            let amp = 0.012 + 0.05 * intensity                       // 呼吸幅度：安静基线，越大声越大
+            let breath = model.isListening ? 1.0 + amp * phase : 1.0
+            let shadowOpacity = 0.24 + (model.isListening ? 0.10 * Double(phase) : 0)
+            VStack {
+                Spacer(minLength: 0)
+                capsule(phase: phase)
+                    .scaleEffect(breath, anchor: .center)
+                    // 干净单药丸的柔和对称悬浮投影：透明度随呼吸均匀起伏，无描边、无第二层。
+                    .shadow(color: .black.opacity(shadowOpacity), radius: 16, y: 8)
+                    // 出现/消失：弹簧放大 + 从底部淡入 / 缩小淡出
+                    .scaleEffect(shown ? 1.0 : 0.84, anchor: .bottom)
+                    .offset(y: shown ? 0 : 18)
+                    .opacity(shown ? 1 : 0)
+                    .animation(.spring(response: 0.40, dampingFraction: 0.72), value: model.presented)
+                    .padding(.bottom, 30)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func capsule(phase: CGFloat) -> some View {
         HStack(spacing: 12) {
-            PulseOrb(level: model.level, listening: model.isListening)
+            PulseOrb(intensity: intensity, idle: phase, listening: model.isListening, color: accent)
                 .frame(width: 22, height: 22)
 
             if showStatus {
@@ -70,10 +78,7 @@ struct FloatingView: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 13)
         .frame(minWidth: 96)
-        .glassCapsule(preview: previewStatic)
-        // 单颗干净玻璃药丸：不要外圈描边/线框。只留它自身柔和均匀的悬浮投影。
-        // 呼吸 = 投影透明度 + 半径的均匀起伏（配合外层 1.0↔1.03 缩放），完全对称、无硬边。
-        .shadow(color: .black.opacity(breathe ? 0.34 : 0.24), radius: breathe ? 20 : 15, y: 8)
+        .glassCapsule(preview: previewStatic)   // 唯一形状：干净玻璃药丸（无外圈/描边/第二背景）
         .animation(.spring(response: 0.42, dampingFraction: 0.78), value: hasText)
         .animation(.spring(response: 0.42, dampingFraction: 0.78), value: showStatus)
     }
@@ -98,33 +103,26 @@ private extension View {
 // MARK: - RMS 律动脉冲球（呼吸基线 + 随音量脉冲）
 
 struct PulseOrb: View {
-    let level: Float
+    let intensity: CGFloat      // 0..1 已平滑的音量强度（律动主驱动）
+    let idle: CGFloat           // 0..1 呼吸相位（安静时的基线脉动；来自父 TimelineView）
     let listening: Bool
-    @State private var breathe = false
-
-    // RMS→强度：感知曲线 + 封顶。安静≈0，正常说话≈0.4-0.9。
-    private var intensity: CGFloat {
-        guard listening else { return 0 }
-        return min(1, CGFloat((level * 9).squareRoot()))
-    }
-    private var color: Color { listening ? .accentColor : .secondary }
+    var color: Color = .accentColor
 
     var body: some View {
+        let base = listening ? 0.05 * idle : 0      // 安静时也有轻微基线呼吸
+        let p = intensity                            // 越大声脉冲越强
         ZStack {
-            // 外圈脉冲：随音量扩张 + 变淡
+            // 外圈脉冲：随音量扩张 + 变亮
             Circle()
-                .fill(color.opacity(0.22 + 0.30 * intensity))
-                .scaleEffect(0.7 + 0.9 * intensity + (breathe ? 0.06 : 0))
+                .fill(color.opacity(0.16 + 0.34 * p))
+                .scaleEffect(0.68 + 0.95 * p + base)
                 .blur(radius: 1.5)
-            // 实心核心：轻微随音量
+            // 实心核心：随音量轻微胀大 + 发光
             Circle()
                 .fill(color)
-                .scaleEffect(0.42 + 0.16 * intensity + (breathe ? 0.04 : 0))
-                .shadow(color: color.opacity(0.7), radius: 4 + 6 * intensity)
+                .scaleEffect(0.40 + 0.18 * p + base)
+                .shadow(color: color.opacity(0.6), radius: 3 + 6 * p)
         }
-        .animation(.spring(response: 0.22, dampingFraction: 0.55), value: intensity)
-        .onAppear { breathe = true }
-        .animation(.easeInOut(duration: 2.4).repeatForever(autoreverses: true), value: breathe)
         .opacity(listening ? 1 : 0.5)
     }
 }

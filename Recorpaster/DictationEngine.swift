@@ -61,6 +61,7 @@ final class DictationEngine {
     private static let maxSessionSec = 180
     private var maxSessionSamples: Int { AudioConstants.sampleRate * Self.maxSessionSec }
     private var didWarnCap = false
+    private var levelEnv: Float = 0            // RMS 包络（呼吸/脉冲律动用）
 
     init(config: Config,
          onResult: @escaping @MainActor (DictationResult) -> Void,
@@ -117,6 +118,7 @@ final class DictationEngine {
         guard isReady, !recording else { return }
         sessionSamples.removeAll(keepingCapacity: true)
         didWarnCap = false
+        levelEnv = 0
         meterCount = 0
         meterSum = 0
         meterStart = Date()
@@ -138,7 +140,11 @@ final class DictationEngine {
                     if let onLevel = self.onLevel, !delta.isEmpty {
                         var s: Float = 0
                         for v in delta { s += v * v }
-                        onLevel((s / Float(delta.count)).squareRoot())
+                        let raw = (s / Float(delta.count)).squareRoot()
+                        // 包络跟随：快起慢落，去抖动 → 视图呼吸/脉冲平滑不闪。
+                        let coeff: Float = raw > self.levelEnv ? 0.6 : 0.15
+                        self.levelEnv += (raw - self.levelEnv) * coeff
+                        onLevel(self.levelEnv)
                     }
                 }
             }

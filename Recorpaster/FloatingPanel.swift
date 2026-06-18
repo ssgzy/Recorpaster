@@ -40,7 +40,9 @@ final class FloatingPanelController {
         panel.hidesOnDeactivate = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        // 窗口绝不自投影：否则会在药丸外圈再描一道窗口阴影（那条多余的“外圈线”）。
+        // 投影只由 SwiftUI .shadow 加在内层药丸上 → 画面里只有单颗药丸 + 它自己的柔和投影。
+        panel.hasShadow = false
         panel.ignoresMouseEvents = true          // 纯展示、点击穿透
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.alphaValue = 0
