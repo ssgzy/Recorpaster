@@ -41,6 +41,50 @@ jobs:
           }
           Get-ChildItem dist/Recorpaster | Select-Object -First 20 Name,Length
 
+      # —— ① 启动探针：打破“没人在真 Windows 跑过”的盲区。两段：
+      #    (a) 无头 --selftest：导入全部原生依赖 + 跑一帧 Silero onnx → 确定性抓 DLL/ABI 加载崩溃；
+      #    (b) 真启动冒烟 ~15s：起 GUI（跳过模型下载）→ 抓 WebView2/CLR/启动期崩溃。
+      #    GUI 子系统 EXE 必须用 Start-Process（-Wait 才阻塞、-PassThru 才拿得到退出码）。
+      - name: Selftest probe (无头依赖/ABI 自检)
+        shell: pwsh
+        run: |
+          $exe = "dist/Recorpaster/Recorpaster.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList '--selftest' -Wait -PassThru
+          $code = $p.ExitCode
+          Write-Host "selftest 退出码: $code"
+          $log = Join-Path $env:APPDATA 'Recorpaster\Recorpaster.log'
+          if (Test-Path $log) {
+            Write-Host '----- Recorpaster.log 末尾 -----'
+            Get-Content $log -Tail 60
+          } else {
+            Write-Error "未找到启动日志: $log"; exit 1
+          }
+          if ($code -ne 0) { Write-Error "selftest 退出码非 0（$code）—— 依赖/ABI 加载失败"; exit 1 }
+          if (-not (Select-String -Path $log -Pattern 'selftest OK' -Quiet)) {
+            Write-Error "日志未包含 'selftest OK'"; exit 1
+          }
+          Write-Host 'selftest 通过 ✅'
+
+      - name: Launch smoke test (真启动 ~15s，崩溃即失败)
+        shell: pwsh
+        env:
+          RECORPASTER_SMOKE: '1'   # 跳过模型下载，只验证 GUI/托盘/WebView2/热键启动
+        run: |
+          $exe = "dist/Recorpaster/Recorpaster.exe"
+          $p = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 15
+          $log = Join-Path $env:APPDATA 'Recorpaster\Recorpaster.log'
+          if ($p.HasExited) {
+            $code = $p.ExitCode
+            if (Test-Path $log) { Write-Host '----- Recorpaster.log 末尾 -----'; Get-Content $log -Tail 60 }
+            Write-Error "EXE 在 15s 内退出（退出码 $code）—— 疑似启动崩溃（WebView2/CLR/音频设备）"
+            exit 1
+          }
+          Write-Host 'EXE 存活 15s，未崩溃 ✅'
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Get-Process Recorpaster -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          if (Test-Path $log) { Write-Host '----- Recorpaster.log 末尾 -----'; Get-Content $log -Tail 40 }
+
       # 一起带上 WebView2 Evergreen 引导器（约 2MB）：clean Win10 无 WebView2 运行时时，
       # 安装器会静默装上；zip 用户也可手动运行。失败不影响 zip 产物（Win11/CI 自带运行时）。
       - name: Bundle WebView2 bootstrapper (optional)

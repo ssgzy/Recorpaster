@@ -256,6 +256,12 @@ class App:
         threading.Thread(target=self._output_worker, daemon=True).start()
         self._start_hotkey()
         self._ensure_noactivate()   # Windows：首次显示前就把悬浮条设成“不抢焦点”
+        # 冒烟模式（CI 真启动探针）：只验证 GUI/托盘/热键/WebView2 能起来，
+        # 跳过模型加载（否则会从 HuggingFace 拉 ~1.5GB，CI 不需要、也太慢）。
+        if os.environ.get("RECORPASTER_SMOKE") == "1":
+            print("[smoke] 跳过模型加载，仅验证 GUI/托盘/热键/WebView2 启动。")
+            self._set_tray_state("idle", "smoke 模式")
+            return
         self._build_engine()
 
     # ---------------- 系统托盘（pystray）----------------
@@ -774,8 +780,71 @@ class App:
             pass
 
 
+def run_selftest() -> int:
+    """无头自检（--selftest）：导入全部原生依赖 → 校验打包资源 → 读配置 →
+    加载并跑一帧 Silero VAD onnx。全程不开麦克风、不开 GUI。
+
+    成功打印 'selftest OK' 返回 0；任一检查失败返回 1。CI 用它在干净 x64 Windows 上
+    确定性地抓住冻结 EXE 的 DLL/ABI 加载崩溃（ctranslate2 / onnxruntime / PyAV /
+    pythonnet-CLR 等原生件是打包后最大的未知）。"""
+    print("===== Recorpaster selftest 开始 =====")
+    failures = []
+
+    def check(name, fn):
+        try:
+            info = fn()
+            print(f"[selftest] OK   {name}" + (f" · {info}" if info else ""))
+        except Exception as e:
+            failures.append(name)
+            print(f"[selftest] FAIL {name}: {e!r}")
+
+    def _imp(mod):
+        m = __import__(mod)
+        return getattr(m, "__version__", "")
+
+    # 1) 原生依赖导入（ABI/DLL 加载——冻结 EXE 最大的未知）
+    for mod in ("numpy", "sounddevice", "pynput", "pyperclip", "onnxruntime",
+                "ctranslate2", "faster_whisper", "av", "huggingface_hub",
+                "webview", "pystray", "PIL"):
+        check(f"import {mod}", lambda mod=mod: _imp(mod))
+    # Windows 专属后端：pythonnet/CLR（pywebview EdgeChromium 后端）+ pystray win32
+    if IS_WINDOWS:
+        check("import clr (pythonnet/.NET)", lambda: _imp("clr"))
+        check("import pystray._win32", lambda: (__import__("pystray._win32"), "win32")[1])
+
+    # 2) 打包内资源齐全（前端 HTML）
+    def _assets():
+        missing = [p for p in (INDEX_HTML, SETTINGS_HTML) if not os.path.isfile(p)]
+        if missing:
+            raise FileNotFoundError("缺少 web 资源: " + ", ".join(missing))
+        return "web/index.html + settings.html"
+    check("打包资源 web/", _assets)
+
+    # 3) 读配置（不触碰 GUI/麦克风）
+    check("settings.load()", lambda: f"hotkey={settings.load().get('hotkey')}")
+
+    # 4) 加载 Silero VAD onnx 并跑一帧推理（最实在的 onnxruntime + numpy ABI 检验）
+    def _vad():
+        import numpy as np
+        from engine import _find_silero_onnx, _OnnxSileroModel
+        path = _find_silero_onnx()
+        prob = _OnnxSileroModel(path)(np.zeros(512, dtype=np.float32))
+        if not (0.0 <= prob <= 1.0):
+            raise ValueError(f"VAD 概率越界: {prob}")
+        return f"{os.path.basename(path)} · prob={prob:.4f}"
+    check("Silero VAD onnx 加载+推理", _vad)
+
+    if failures:
+        print(f"❌ selftest FAILED（{len(failures)} 项）: {', '.join(failures)}")
+        return 1
+    print("selftest OK")
+    return 0
+
+
 def main():
     setup_logging()
+    if "--selftest" in sys.argv:
+        sys.exit(run_selftest())
     print("=" * 60)
     print(" 轻量化本地语音听写工具（Windows 版）")
     print(" 长按热键说话；松开停止。系统托盘图标可设置/退出。")
