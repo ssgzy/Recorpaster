@@ -64,6 +64,8 @@ final class AppController {
             guard let self, self.state == .active else { return }
             self.floating.model.text = text
         }
+        // 模型加载/下载进度 → 浮条进度条
+        engine.onLoadProgress = { [weak self] label, prog in self?.showLoading(label, progress: prog) }
 
         // 权限：缺啥真正弹啥的系统框 + 加进 TCC 列表（OS 自身去重，不会反复刷屏；之后看门狗只轮询）
         Permissions.promptAccessibilityIfNeeded()
@@ -89,8 +91,7 @@ final class AppController {
         }
 
         // 首次加载提示 + 加载模型
-        let firstRun = !UserDefaults.standard.bool(forKey: firstRunKey)
-        showLoading(firstRun ? "首次运行 · 下载模型中…（约 1.5GB，请保持联网）" : "加载模型中…")
+        showLoading("准备模型中…")   // 初始占位，随后由引擎 onLoadProgress 驱动「下载 %」/「加载中…」
         Task { await engine.loadModel() }
         textOutput.preloadPunctuation()   // 后台预热中文标点模型，首句上屏不卡
 
@@ -246,6 +247,8 @@ final class AppController {
         case .modelError(let msg):
             engineReady = false
             statusItem.setState(.warn, tooltip: msg)
+            floating.model.isLoading = false
+            floating.model.loadProgress = nil
             floating.model.statusLine = msg
             floating.model.text = ""
             floating.setVisible(true)
@@ -255,8 +258,10 @@ final class AppController {
 
     // MARK: - 浮窗提示
 
-    private func showLoading(_ msg: String) {
+    private func showLoading(_ msg: String, progress: Double? = nil) {
         floating.model.statusLine = msg
+        floating.model.loadProgress = progress
+        floating.model.isLoading = true
         floating.model.text = ""
         floating.model.isListening = false
         floating.setVisible(true)
@@ -267,6 +272,8 @@ final class AppController {
     /// 不再用 loadingShown 守卫——它会被 toast 等提前置 false，导致 ready 时不清、文案残留卡死。
     private func hideLoadingIfShown() {
         loadingShown = false
+        floating.model.isLoading = false
+        floating.model.loadProgress = nil
         guard !floating.model.isListening else { return }   // 听写中不动
         floating.model.statusLine = ""                       // 清掉「加载模型中…」文案，别残留
         floating.setVisible(false)                           // 回 idle：隐藏浮窗

@@ -68,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onStatus: { s in Log.info("PIPELINE SELFTEST status: \(s)") }
         )
         engine.onPartial = { t in Log.info("PIPELINE SELFTEST partial: \"\(t)\"") }   // 激活流式，验收尾不挂起
+        engine.onLoadProgress = { l, p in Log.info("PIPELINE SELFTEST load: \(l) \(p.map { "\(Int($0 * 100))%" } ?? "(不确定式)")") }
         selfTestEngine = engine
         await engine.loadModel()
         guard engine.isReady else {

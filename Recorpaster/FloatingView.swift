@@ -16,6 +16,8 @@ final class FloatingModel: ObservableObject {
     @Published var isListening: Bool = false
     @Published var level: Float = 0           // 采集回调喂入的瞬时 RMS（律动用）
     @Published var presented: Bool = false    // 出现/消失：弹簧放大+淡入 / 缩小+淡出
+    @Published var loadProgress: Double? = nil // 加载进度：nil=不确定式动画，0..1=确定式%（下载）
+    @Published var isLoading: Bool = false     // 是否处于模型加载/下载中（决定是否显示进度条）
 }
 
 struct FloatingView: View {
@@ -26,6 +28,7 @@ struct FloatingView: View {
     private var hasText: Bool { !model.text.isEmpty }
     private var showStatus: Bool { !model.statusLine.isEmpty && !hasText }
     private var shown: Bool { previewStatic || model.presented }
+    private var isLoadingContext: Bool { model.isLoading }
     // 已被引擎包络平滑的 RMS → 0..1 感知强度（安静≈0，正常说话≈0.4-0.9）。
     private var intensity: CGFloat {
         guard model.isListening else { return 0 }
@@ -62,10 +65,17 @@ struct FloatingView: View {
                 .frame(width: 22, height: 22)
 
             if showStatus {
-                Text(model.statusLine)
-                    .font(.system(size: 14, weight: .medium, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .transition(.opacity)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(model.statusLine + (model.loadProgress.map { " \(Int($0 * 100))%" } ?? ""))
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                    // 加载/下载时显示进度条（确定式填充或不确定式扫动）；非加载状态（如 toast）无 loadProgress 也可隐去
+                    if isLoadingContext {
+                        LoadBar(progress: model.loadProgress, color: accent)
+                            .frame(width: 196, height: 4)
+                    }
+                }
+                .transition(.opacity)
             } else if hasText {
                 PopText(text: model.text, staticFull: previewStatic)
             } else {
@@ -124,6 +134,36 @@ struct PulseOrb: View {
                 .shadow(color: color.opacity(0.6), radius: 3 + 6 * p)
         }
         .opacity(listening ? 1 : 0.5)
+    }
+}
+
+// MARK: - 加载进度条（确定式填充 / 不确定式扫动）
+
+struct LoadBar: View {
+    let progress: Double?      // nil = 不确定式（加载/编译，不透明）；0..1 = 确定式（下载字节）
+    var color: Color = .accentColor
+    @State private var phase: CGFloat = 0
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(.white.opacity(0.16))            // 轨道
+                if let p = progress {
+                    Capsule().fill(color)                        // 确定式：按 % 填充
+                        .frame(width: max(4, w * CGFloat(min(1, max(0, p)))))
+                        .animation(.easeOut(duration: 0.25), value: p)
+                } else {
+                    Capsule().fill(color)                        // 不确定式：一段来回扫动
+                        .frame(width: w * 0.34)
+                        .offset(x: phase * (w * 0.66))
+                }
+            }
+        }
+        .clipShape(Capsule())
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) { phase = 1 }
+        }
     }
 }
 

@@ -42,6 +42,8 @@ final class DictationEngine {
     var onLevel: (@MainActor (Float) -> Void)?
     /// 流式预览回调：会话期间不断吐出「到目前为止」的临时识别文本（无标点、用完即弃，仅供条上预览）。
     var onPartial: (@MainActor (String) -> Void)?
+    /// 模型加载进度回调：(状态文案, 进度)。进度 nil = 不确定式（加载/编译，不透明）；0..1 = 确定式（下载字节）。
+    var onLoadProgress: (@MainActor (String, Double?) -> Void)?
     /// 流式预览开关（兜底：关掉即退回 Step1「松开后才出字」）。RECOR_NO_STREAM=1 也可强制关。
     var streamingEnabled = true
     private var streamTask: Task<Void, Never>?
@@ -100,13 +102,32 @@ final class DictationEngine {
     func loadModel() async {
         onStatus(.loadingModel)
         do {
+            // 模型缓存默认在 ~/Documents/huggingface/models/argmaxinc/whisperkit-coreml/<model>。
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let folder = docs.appendingPathComponent("huggingface/models/argmaxinc/whisperkit-coreml/\(config.model)")
+
+            let modelFolder: URL
+            if FileManager.default.fileExists(atPath: folder.path) {
+                modelFolder = folder                                  // 已缓存：本地加载，不联网
+            } else {
+                // 首次：真实字节下载，确定式 %（WhisperKit.download → HubApi snapshot）。
+                onLoadProgress?("下载模型…", 0)
+                modelFolder = try await WhisperKit.download(variant: config.model, progressCallback: { p in
+                    let f = p.fractionCompleted
+                    Task { @MainActor [weak self] in self?.onLoadProgress?("下载模型", f) }
+                })
+            }
+
+            // 加载/编译 CoreML（modelState 仅 .loading→.loaded，不透明）→ 不确定式动画 + 诚实时长提示。
+            onLoadProgress?("加载模型中…（约 1–2 分钟）", nil)
             let wkConfig = WhisperKitConfig(
                 model: config.model,
+                modelFolder: modelFolder.path,
                 verbose: false,
                 logLevel: .error,
                 prewarm: false,
                 load: true,
-                download: true
+                download: false
             )
             let wk = try await WhisperKit(wkConfig)
             self.whisperKit = wk
