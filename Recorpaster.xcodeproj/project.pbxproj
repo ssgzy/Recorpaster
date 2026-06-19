@@ -313,6 +313,8 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+				CODE_SIGN_ENTITLEMENTS = "tools/Recorpaster.entitlements";
+				ENABLE_HARDENED_RUNTIME = YES;
 			};
 			name = Release;
 		};
