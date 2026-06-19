@@ -1,4 +1,8 @@
-# Recorpaster
+<p align="center">
+  <img src="docs/logo.png" width="160" alt="Recorpaster">
+</p>
+
+<h1 align="center">Recorpaster</h1>
 
 长按热键说话 → 本地实时把语音转成带标点的文字 → 自动上屏到光标处。**本地、轻量、隐私**：音频只在内存处理，转完即弃，绝不写盘。
 

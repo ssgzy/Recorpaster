@@ -1,3 +1,6 @@
 # 标点模型运行时下载到 App Support，不入库（见 PunctuationRestorer / tools/convert_punct.py）
 *.mlpackage
 *.mlmodelc
+
+# logo 源图（生成 docs/logo.png + AppIcon 后留本地即可）
+recorpaster.png
