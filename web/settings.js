@@ -49,7 +49,7 @@ function fill(s) {
   $('model').value = s.model || 'large-v3-turbo';
   $('min_silence_ms').value = s.min_silence_ms ?? 300; updSilence();
   setSeg('output_mode', s.output_mode || 'paste');
-  $('hotkey').value = s.hotkey || 'alt_r';
+  $('hotkey').value = s.hotkey || 'f8';
   setSeg('hotkey_mode', s.hotkey_mode || 'hold');
   $('engine').value = s.engine || 'auto';
   // 非 Apple Silicon 上把残留的 engine=mlx 纠正回 auto（在赋值之后做才有效）

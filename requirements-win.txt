@@ -1,15 +1,23 @@
-# Windows 运行/打包依赖（Python 3.12）。faster-whisper 走 CPU（int8），不含 torch/mlx。
-# 传递依赖（自动装上，不必显式列）：
-#   faster-whisper → ctranslate2 / tokenizers / av(PyAV·ffmpeg) / huggingface_hub / onnxruntime
+# Windows 运行/打包依赖（Python 3.12, win_amd64）。
+# 全部锁定为 == 精确版本，保证 CI 构建可复现（避免某次 latest 拉到不兼容/破坏 ABI 的 wheel，
+# 而开发机在 Mac 上复现不出来）。这套版本已在开发机（macOS, py3.13）实测互相兼容：
+# numpy 2.x 与 ctranslate2 / onnxruntime / PyAV 等原生包共存、Silero onnx 推理正常
+# （见 `app.py --selftest`）；以下版本在 Windows x64 cp312 均发布了 wheel。
+#
+# 传递依赖（随上面自动装上，CI 会 `pip freeze` 出 requirements-win.lock 工件留存完整闭包）：
+#   faster-whisper → ctranslate2 / tokenizers / av(PyAV·ffmpeg) / huggingface_hub
 #   pywebview      → pythonnet(clr) / proxy_tools / bottle   （Windows EdgeChromium 后端）
 #   pystray        → pillow / six
-faster-whisper
-onnxruntime
-sounddevice
-pynput
-pyperclip
-pywebview
-pystray
-pillow
-numpy
-huggingface_hub
+faster-whisper==1.2.1
+ctranslate2==4.8.0
+tokenizers==0.22.2
+av==17.1.0
+onnxruntime==1.27.0
+huggingface_hub==1.20.0
+sounddevice==0.5.5
+pynput==1.8.2
+pyperclip==1.11.0
+pywebview==6.2.1
+pystray==0.19.5
+pillow==12.1.0
+numpy==2.3.5

@@ -30,6 +30,22 @@ jobs:
           pip install -r requirements-win.txt
           pip install pyinstaller
 
+      # 留存 Windows 上实际解析出的完整闭包（含 pythonnet/clr_loader/pyinstaller 等），
+      # 可作为后续提交的权威 lock（requirements-win.txt 只锁了直接 + ABI 关键依赖）。
+      - name: Emit resolved lockfile (Windows 完整闭包)
+        shell: pwsh
+        run: |
+          pip freeze | Out-File -Encoding utf8 requirements-win.lock
+          Write-Host '----- requirements-win.lock -----'
+          Get-Content requirements-win.lock
+
+      - name: Upload lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: requirements-win-lock
+          path: requirements-win.lock
+          if-no-files-found: warn
+
       - name: Build EXE (PyInstaller · onedir)
         run: pyinstaller --noconfirm --clean Recorpaster-win.spec
 

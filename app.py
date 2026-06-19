@@ -197,7 +197,8 @@ class App:
         self._noactivate_done = False     # Windows 不抢焦点：只设一次
 
         self._kb = keyboard.Controller()
-        self._hotkey = self._resolve_hotkey(self.cfg_dict.get("hotkey", "alt_r"))
+        self._hotkey = self._resolve_hotkey(self.cfg_dict.get("hotkey", "f8"))
+        self._hotkey_vk = self._key_vk(self._hotkey)   # Windows 按键级抑制用（见 _win32_event_filter）
         self._listener = None
 
         # 输出队列：识别线程只管入队，单独线程顺序上屏/复制，避免阻塞下一句识别
@@ -240,8 +241,35 @@ class App:
         )
         self.settings_window.events.closing += self._on_settings_closing
 
-        # func 在 GUI 起来后由 pywebview 在独立线程调用
-        webview.start(self._on_started)
+        # func 在 GUI 起来后由 pywebview 在独立线程调用。
+        # Windows：强制 EdgeChromium(WebView2) 后端——绝不静默回退到 IE11/MSHTML
+        # （那会让 backdrop-filter/flexbox/ES6 全废且不报错）。缺运行时则弹清晰提示。
+        if IS_WINDOWS:
+            try:
+                webview.start(self._on_started, gui="edgechromium")
+            except Exception as e:
+                self._fatal_webview2(e)
+                raise
+        else:
+            webview.start(self._on_started)
+
+    def _fatal_webview2(self, e):
+        """Windows 上 WebView2 运行时缺失/初始化失败时给清晰提示（打包后无控制台也能看到）。"""
+        es = str(e).lower()
+        looks_runtime = any(k in es for k in
+                            ("webview2", "edgechromium", "edge", "runtime", "clr", ".net"))
+        print(f"[fatal] WebView2/EdgeChromium 启动失败: {e}")
+        # CI 冒烟模式不弹模态框（无人点击会卡住）；让异常向上抛出即可被探针判红。
+        if not looks_runtime or os.environ.get("RECORPASTER_SMOKE") == "1":
+            return
+        msg = ("无法启动界面：缺少 Microsoft Edge WebView2 运行时。\n\n"
+               "请运行随安装包附带的 MicrosoftEdgeWebview2Setup.exe，或从\n"
+               "https://go.microsoft.com/fwlink/p/?LinkId=2124703 下载安装后重试。")
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, msg, "Recorpaster", 0x10)  # MB_ICONERROR
+        except Exception:
+            pass
 
     def _on_settings_closing(self):
         self.settings_window.hide()
@@ -646,6 +674,25 @@ class App:
         except AttributeError:
             return keyboard.KeyCode.from_char(name)
 
+    @staticmethod
+    def _key_vk(key):
+        """取热键对应的 Windows 虚拟键码（按键级抑制用）；取不到返回 None。"""
+        vk = getattr(key, "vk", None)                  # KeyCode（如 from_char）
+        if vk is None:
+            val = getattr(key, "value", None)          # Key 枚举 → 其内部 KeyCode
+            vk = getattr(val, "vk", None)
+        return vk
+
+    def _win32_event_filter(self, msg, data):
+        """Windows：只抑制“听写热键”这一个键，使其不漏给前台程序——hold 模式下长按
+        修饰键（如右 Alt=AltGr）不会污染目标输入/上屏——但仍照常触发本监听器的
+        on_press/on_release。其余按键一律放行（绝不全局抑制）。"""
+        try:
+            if self._hotkey_vk is not None and data.vkCode == self._hotkey_vk:
+                self._listener.suppress_event()
+        except Exception:
+            pass
+
     def _start_hotkey(self):
         def on_press(key):
             if not self._key_match(key) or self._key_down:
@@ -664,13 +711,17 @@ class App:
                 self.end_session()
 
         try:
-            self._listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+            kwargs = {}
+            if IS_WINDOWS:
+                # 按键级抑制：只拦“听写热键”，回调照常触发（见 _win32_event_filter）。
+                kwargs["win32_event_filter"] = self._win32_event_filter
+            self._listener = keyboard.Listener(on_press=on_press, on_release=on_release, **kwargs)
             self._listener.start()
         except Exception as e:
             print(f"[warn] 全局热键监听启动失败: {e}")
             return
         mode = "长按推杆" if self.hotkey_mode == "hold" else "按一下切换"
-        print(f"🎹 热键监听已启动（{self.cfg_dict.get('hotkey','alt_r')} · {mode}）。")
+        print(f"🎹 热键监听已启动（{self.cfg_dict.get('hotkey','f8')} · {mode}）。")
 
     def _key_match(self, key) -> bool:
         return key == self._hotkey
@@ -704,9 +755,10 @@ class App:
         if (self.cfg_dict.get("hotkey") != old.get("hotkey")
                 or self.cfg_dict.get("hotkey_mode") != old.get("hotkey_mode")):
             self.hotkey_mode = self.cfg_dict.get("hotkey_mode", "hold")
-            self._hotkey = self._resolve_hotkey(self.cfg_dict.get("hotkey", "alt_r"))
+            self._hotkey = self._resolve_hotkey(self.cfg_dict.get("hotkey", "f8"))
+            self._hotkey_vk = self._key_vk(self._hotkey)   # 抑制用 vk 同步更新
             self._key_down = False
-            print(f"🎹 热键已更新（{self.cfg_dict.get('hotkey','alt_r')} · "
+            print(f"🎹 热键已更新（{self.cfg_dict.get('hotkey','f8')} · "
                   f"{'长按' if self.hotkey_mode=='hold' else '切换'}）—— 监听器复用。")
 
         # 3) 引擎相关字段变了 → 重建 engine（会重载模型）

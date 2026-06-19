@@ -47,7 +47,9 @@ MODEL_MAP = {
 
 DEFAULTS = {
     # —— 核心闭环实际使用 ——
-    "hotkey": "alt_r",          # pynput Key 名（右 Alt；可在设置里改成右 Ctrl/Shift/F6 等）
+    # 默认热键按平台选：Windows 用 F8（布局中立——右 Alt 在欧洲键盘=AltGr，长按会污染输入/上屏）；
+    # macOS 仍用右 Alt。可在设置面板里改。
+    "hotkey": "f8" if sys.platform == "win32" else "alt_r",
     "hotkey_mode": "hold",      # "hold"(长按推杆) | "toggle"(按一下开/再按关)
     "output_mode": "paste",     # "paste"(剪贴板+Ctrl+V 上屏) | "copy"(仅复制到剪贴板)
 
