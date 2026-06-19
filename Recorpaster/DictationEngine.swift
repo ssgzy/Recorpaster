@@ -44,6 +44,8 @@ final class DictationEngine {
     var onPartial: (@MainActor (String) -> Void)?
     /// 模型加载进度回调：(状态文案, 进度)。进度 nil = 不确定式（加载/编译，不透明）；0..1 = 确定式（下载字节）。
     var onLoadProgress: (@MainActor (String, Double?) -> Void)?
+    /// 识别语言（WhisperKit DecodingOptions.language；nil=自动）。可热设，不打断在途转写（下次转写生效）。
+    var language: String?
     /// 流式预览开关（兜底：关掉即退回 Step1「松开后才出字」）。RECOR_NO_STREAM=1 也可强制关。
     var streamingEnabled = true
     private var streamTask: Task<Void, Never>?
@@ -93,6 +95,7 @@ final class DictationEngine {
          onResult: @escaping @MainActor (DictationResult) -> Void,
          onStatus: @escaping @MainActor (EngineStatus) -> Void) {
         self.config = config
+        self.language = config.languageCode
         self.onResult = onResult
         self.onStatus = onStatus
     }
@@ -230,11 +233,11 @@ final class DictationEngine {
         defer { releaseTranscribe() }
         guard !stopping, let wk = whisperKit else { return nil }   // 等锁期间若已进入收尾，放弃这笔
         var opts = DecodingOptions()
-        opts.language = config.language
+        opts.language = language
         opts.temperature = 0
         opts.usePrefillPrompt = true
         opts.promptTokens = nil
-        opts.detectLanguage = false
+        opts.detectLanguage = (language == nil)   // auto(nil)=开自动检测；指定 zh/en=关
         opts.skipSpecialTokens = true
         opts.withoutTimestamps = true
         do {
@@ -314,19 +317,19 @@ final class DictationEngine {
         }
 
         var opts = DecodingOptions()
-        opts.language = config.language
+        opts.language = language
         opts.temperature = 0
         opts.usePrefillPrompt = true
         // ⚠️ 不喂 promptTokens：large-v3-turbo 只要吃到 <|startofprev|> 前文就立即 EOT → 整段空。
         //（已用已知 WAV 复现：任意 prompt 内容/temperature/时间戳都塌；唯一恢复输出=不喂 prompt。）
         //  标点改靠模型原生输出；如换非-turbo 模型可在此恢复 opts.promptTokens = promptTokens。
         opts.promptTokens = nil
-        opts.detectLanguage = false
+        opts.detectLanguage = (language == nil)   // auto(nil)=开自动检测；指定 zh/en=关
         opts.skipSpecialTokens = true
         opts.withoutTimestamps = true
 
         // (b) 何时调 transcribe（经互斥锁：若有在途流式临时转写，先等它跑完，绝不并发）
-        Log.info("(b) 调用 WhisperKit.transcribe …（整段转写，language=\(config.language ?? "auto")，原生标点）")
+        Log.info("(b) 调用 WhisperKit.transcribe …（整段转写，language=\(language ?? "auto")，原生标点）")
         await acquireTranscribe()
         let t0 = Date()
         let results: [TranscriptionResult]
@@ -392,11 +395,11 @@ final class DictationEngine {
     private func runPass(_ wk: WhisperKit, _ audio: [Float], withPrompt: Bool, label: String)
         async -> (text: String, cost: Double)? {
         var opts = DecodingOptions()
-        opts.language = config.language
+        opts.language = language
         opts.temperature = 0
         opts.usePrefillPrompt = true
         opts.promptTokens = withPrompt ? (promptTokens.isEmpty ? nil : promptTokens) : nil
-        opts.detectLanguage = false
+        opts.detectLanguage = (language == nil)   // auto(nil)=开自动检测；指定 zh/en=关
         opts.skipSpecialTokens = true
         opts.withoutTimestamps = true
 

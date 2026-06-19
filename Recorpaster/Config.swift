@@ -2,56 +2,126 @@
 //  Config.swift
 //  Recorpaster
 //
-//  Phase 1 配置：硬编码默认值（Phase 2 再做设置面板 + JSON 持久化）。
-//  字段与 Python 版 settings.py / engine.Config 对齐，便于后续 1:1 映射。
+//  全局配置 + JSON 持久化（Phase 2）。单一文件 ~/Library/Application Support/Recorpaster/config.json。
+//  缺失/损坏 → 用默认值，绝不崩。改动即存、尽量热生效（见 ConfigStore / AppController.applyConfig）。
 //
 
 import Foundation
+import SwiftUI
 
 /// 热键触发模式：长按推杆 / 按一下切换。
-enum HotkeyMode: String {
-    case hold      // 按下开始、松开停止
-    case toggle    // 按一下开、再按一下关
-}
+enum HotkeyMode: String, Codable { case hold, toggle }
 
 /// 上屏方式。
-enum OutputMode: String {
-    case paste     // 剪贴板 + ⌘V 上屏（用完还原剪贴板）
-    case copy      // 仅复制到剪贴板
+enum OutputMode: String, Codable, CaseIterable { case paste, copy
+    var display: String { self == .paste ? "自动粘贴（⌘V）" : "仅复制到剪贴板" }
 }
 
-/// 全局配置。Phase 1 用默认值；Phase 2 起从 JSON 读写。
-struct Config {
-    // —— 热键 ——
-    /// 默认右 ⌥ Option，keyCode = 61（捕获稳定；别用 fn）。
-    var hotkeyKeyCode: Int64 = 61
+/// 识别语言设置。auto = 让 WhisperKit 自动检测。
+enum LanguageSetting: String, Codable, CaseIterable {
+    case auto, chinese, english
+    /// 传给 WhisperKit DecodingOptions.language；nil = 自动。
+    var code: String? { switch self { case .auto: nil; case .chinese: "zh"; case .english: "en" } }
+    var display: String { switch self { case .auto: "自动检测"; case .chinese: "中文"; case .english: "英文" } }
+}
+
+/// 全局配置。Codable 持久化；新增字段都要给默认值，保证旧/缺字段的 JSON 也能解码。
+struct Config: Codable, Equatable {
+    // —— 快捷键（hold-to-talk）——
+    var hotkeyKeyCode: Int64 = 61          // 默认右 ⌥
     var hotkeyMode: HotkeyMode = .hold
+
+    // —— 识别 ——
+    var language: LanguageSetting = .auto   // 默认自动检测
+    var punctuationEnabled: Bool = true     // 中文 BERT 标点后处理开关
 
     // —— 输出 ——
     var outputMode: OutputMode = .paste
 
-    // —— 识别引擎（WhisperKit）——
-    /// WhisperKit 模型名 = argmaxinc/whisperkit-coreml 仓库里的**精确文件夹名**。
-    /// 用全名（而非短名 "large-v3-turbo"）避免 glob 匹配歧义：WhisperKit 用 `*<model>/*` 去仓库匹配，
-    /// 而仓库 turbo 文件夹是下划线写法 `openai_whisper-large-v3-v20240930_turbo`（OpenAI 官方 large-v3-turbo），
-    /// 短横线写法的 "large-v3-turbo" 匹配不到。该全名唯一匹配该文件夹（不含量化的 _632MB 版）。
-    var model: String = "openai_whisper-large-v3-v20240930_turbo"
-    /// 识别语言；nil = 自动检测。中文固定 "zh" 质量与稳定性最好。
-    var language: String? = "zh"
-    /// 标点风格引导：一段“本身带标点”的中文，让 Whisper 跟随该风格输出标点（不是当指令）。置空关闭。
-    var initialPrompt: String = "以下是普通话的句子，请加上标点。"
+    // —— 外观 ——
+    var accentColorHex: String = "#0A84FF"  // 浮条强调色（默认 macOS 系统蓝）
 
-    // —— VAD / 断句 ——
-    /// 断句灵敏度：检测到这么久的静音才判定一句结束。大=更完整，小=更快出字。
-    var minSilenceMs: Int = 300
-    /// 环境灵敏度：相对噪声基底的能量倍数门限。嘈杂环境可调高。
-    var vadThreshold: Float = 0.5
-    /// 句首回看帧数，避免吞掉句子开头（10 帧 ≈ 320ms）。
-    var lookbackChunks: Int = 10
-    /// 短于此时长的片段丢弃，过滤噪声/误触发。
+    // —— 行为 ——
+    var launchAtLogin: Bool = false
+    var playSounds: Bool = false            // 开始/停止轻提示音
+    var streamingPreview: Bool = true       // 实时逐字预览（轮询重转写）
+
+    // —— 引擎内部（不在 UI 编辑，但持久化）——
+    var model: String = "openai_whisper-large-v3-v20240930_turbo"
+    var initialPrompt: String = "以下是普通话的句子，请加上标点。"   // 仅 dev 诊断用
     var minUtterSec: Double = 0.3
 
+    // —— 派生 ——
+    var languageCode: String? { language.code }
+    var accentColor: Color { Color(hex: accentColorHex) ?? .accentColor }
+
     static let `default` = Config()
+}
+
+// 逐字段容错 Codable：**缺字段/类型不符 → 用该字段默认值**（forward-compat：加新设置不会重置旧配置）。
+// 放在 extension 里，保留合成的无参 init()（即 Config() / Config.default）。
+extension Config {
+    enum CodingKeys: String, CodingKey {
+        case hotkeyKeyCode, hotkeyMode, language, punctuationEnabled, outputMode
+        case accentColorHex, launchAtLogin, playSounds, streamingPreview
+        case model, initialPrompt, minUtterSec
+    }
+    init(from decoder: Decoder) throws {
+        var c = Config()   // 从默认值起，只覆盖 JSON 里存在且合法的字段
+        let k = try decoder.container(keyedBy: CodingKeys.self)
+        c.hotkeyKeyCode      = (try? k.decode(Int64.self, forKey: .hotkeyKeyCode)) ?? c.hotkeyKeyCode
+        c.hotkeyMode         = (try? k.decode(HotkeyMode.self, forKey: .hotkeyMode)) ?? c.hotkeyMode
+        c.language           = (try? k.decode(LanguageSetting.self, forKey: .language)) ?? c.language
+        c.punctuationEnabled = (try? k.decode(Bool.self, forKey: .punctuationEnabled)) ?? c.punctuationEnabled
+        c.outputMode         = (try? k.decode(OutputMode.self, forKey: .outputMode)) ?? c.outputMode
+        c.accentColorHex     = (try? k.decode(String.self, forKey: .accentColorHex)) ?? c.accentColorHex
+        c.launchAtLogin      = (try? k.decode(Bool.self, forKey: .launchAtLogin)) ?? c.launchAtLogin
+        c.playSounds         = (try? k.decode(Bool.self, forKey: .playSounds)) ?? c.playSounds
+        c.streamingPreview   = (try? k.decode(Bool.self, forKey: .streamingPreview)) ?? c.streamingPreview
+        c.model              = (try? k.decode(String.self, forKey: .model)) ?? c.model
+        c.initialPrompt      = (try? k.decode(String.self, forKey: .initialPrompt)) ?? c.initialPrompt
+        c.minUtterSec        = (try? k.decode(Double.self, forKey: .minUtterSec)) ?? c.minUtterSec
+        self = c
+    }
+    func encode(to encoder: Encoder) throws {
+        var k = encoder.container(keyedBy: CodingKeys.self)
+        try k.encode(hotkeyKeyCode, forKey: .hotkeyKeyCode)
+        try k.encode(hotkeyMode, forKey: .hotkeyMode)
+        try k.encode(language, forKey: .language)
+        try k.encode(punctuationEnabled, forKey: .punctuationEnabled)
+        try k.encode(outputMode, forKey: .outputMode)
+        try k.encode(accentColorHex, forKey: .accentColorHex)
+        try k.encode(launchAtLogin, forKey: .launchAtLogin)
+        try k.encode(playSounds, forKey: .playSounds)
+        try k.encode(streamingPreview, forKey: .streamingPreview)
+        try k.encode(model, forKey: .model)
+        try k.encode(initialPrompt, forKey: .initialPrompt)
+        try k.encode(minUtterSec, forKey: .minUtterSec)
+    }
+}
+
+// MARK: - Color ↔ hex（强调色持久化用）
+
+extension Color {
+    /// 从 "#RRGGBB" / "RRGGBB" 解析（失败返回 nil → 退回系统强调色）。
+    init?(hex: String) {
+        var s = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, let v = UInt32(s, radix: 16) else { return nil }
+        self = Color(.sRGB,
+                     red: Double((v >> 16) & 0xFF) / 255,
+                     green: Double((v >> 8) & 0xFF) / 255,
+                     blue: Double(v & 0xFF) / 255)
+    }
+
+    /// 转成 "#RRGGBB"（用 NSColor 取 sRGB 分量）。
+    var hexRGB: String {
+        let ns = NSColor(self).usingColorSpace(.sRGB) ?? .systemBlue
+        let r = Int((ns.redComponent * 255).rounded())
+        let g = Int((ns.greenComponent * 255).rounded())
+        let b = Int((ns.blueComponent * 255).rounded())
+        return String(format: "#%02X%02X%02X", r, g, b)
+    }
 }
 
 /// 引擎层公用常量（与 engine.py 对齐）。nonisolated：供音频线程等非 MainActor 上下文直接引用。

@@ -20,12 +20,14 @@ import AVFoundation
 final class AppController {
     private enum SessionState { case idle, active, stopping }
 
-    private let config = Config.default
+    let store = ConfigStore()                      // 配置真相源（持久化 + 热生效）
+    private var config: Config { store.config }     // 实时读
     private let floating = FloatingPanelController()
     private let statusItem = StatusItemController()
     private let textOutput = TextOutput()
     private let hotKey: HotKeyMonitor
     private var engine: DictationEngine!
+    private var settingsWindow: SettingsWindowController?
 
     private var state: SessionState = .idle
     private var pendingBegin = false
@@ -38,9 +40,9 @@ final class AppController {
     private let firstRunKey = "didLoadModelOnce"
 
     init() {
-        hotKey = HotKeyMonitor(keyCode: config.hotkeyKeyCode)
+        hotKey = HotKeyMonitor(keyCode: store.config.hotkeyKeyCode)
         engine = DictationEngine(
-            config: config,
+            config: store.config,
             onResult: { [weak self] r in self?.handleResult(r) },
             onStatus: { [weak self] s in self?.handleStatus(s) }
         )
@@ -52,6 +54,16 @@ final class AppController {
         // 菜单栏动作
         statusItem.onToggle = { [weak self] in self?.toggleSession() }
         statusItem.onQuit = { [weak self] in self?.quit() }
+        statusItem.onSettings = { [weak self] in self?.openSettings() }
+
+        // 配置变更 → 热生效（只对变了的项应用）
+        store.onChange = { [weak self] old, new in self?.applyConfig(old: old, new: new) }
+        // 同步开机自启真实状态（SMAppService 为准；用户可能在别处改过）
+        if store.config.launchAtLogin != LoginItem.isEnabled {
+            store.config.launchAtLogin = LoginItem.isEnabled
+        }
+        // 启动应用一次：把已保存配置铺到引擎/浮条（语言/流式/强调色等）
+        applyConfig(old: .default, new: store.config)
 
         // 热键回调
         hotKey.onPress = { [weak self] in self?.handlePress() }
@@ -147,6 +159,7 @@ final class AppController {
         do {
             try engine.start()
             state = .active
+            playSound(begin: true)
             floating.model.text = ""
             floating.model.statusLine = "聆听中…"
             floating.model.isListening = true
@@ -177,6 +190,7 @@ final class AppController {
             return
         case .active:
             state = .stopping
+            playSound(begin: false)
             resetIconForStoppingCancel()
         }
 
@@ -230,7 +244,9 @@ final class AppController {
             toast("上屏失败：缺辅助功能权限（已复制到剪贴板，可手动 ⌘V）· 见菜单", seconds: 4)
             mode = .copy
         }
-        textOutput.enqueue(r.text, mode: mode)   // 上屏 / 复制（已含标点规整）
+        // 标点：设置开 且 语言非英文（英文 Whisper 自带标点、BERT 是中文模型）才走 BERT 后处理。
+        let punctuate = config.punctuationEnabled && config.language != .english
+        textOutput.enqueue(r.text, mode: mode, punctuate: punctuate)   // 上屏 / 复制
     }
 
     private func handleStatus(_ s: EngineStatus) {
@@ -345,6 +361,40 @@ final class AppController {
         } else {
             statusItem.setState(.idle, tooltip: "听写就绪 · 长按右 ⌥ 说话")
         }
+    }
+
+    // MARK: - 设置热生效
+
+    /// 配置变更后只对**变了的项**热生效，绝不打断在途听写。
+    private func applyConfig(old: Config, new: Config) {
+        engine.language = new.languageCode            // 语言：下次转写生效
+        engine.streamingEnabled = new.streamingPreview // 流式预览开关：下次会话生效
+        floating.model.accent = new.accentColor       // 强调色：立即生效
+        if old.hotkeyKeyCode != new.hotkeyKeyCode {   // 快捷键：热换（updateKeyCode 已清 isDown 防幻影）
+            hotKey.updateKeyCode(new.hotkeyKeyCode)
+            Log.info("快捷键已更新 → keyCode=\(new.hotkeyKeyCode)")
+        }
+        // 开机自启：仅当意图变了**且**系统现状与意图不符才注册/注销（幂等，避免启动同步时重复操作）。
+        if old.launchAtLogin != new.launchAtLogin, LoginItem.isEnabled != new.launchAtLogin {
+            LoginItem.set(new.launchAtLogin)
+        }
+        // outputMode / punctuationEnabled / playSounds 在使用时实时读，无需在此应用。
+    }
+
+    private func openSettings() {
+        if settingsWindow == nil {
+            settingsWindow = SettingsWindowController(
+                store: store, floatingModel: floating.model, modelName: config.model,
+                pauseHotkey: { [weak self] paused in self?.hotKey.paused = paused }
+            )
+        }
+        settingsWindow?.show()
+    }
+
+    /// 轻提示音（开始/停止听写）。仅在设置开启时。
+    private func playSound(begin: Bool) {
+        guard config.playSounds else { return }
+        NSSound(named: begin ? "Tink" : "Pop")?.play()
     }
 
     // MARK: - 退出

@@ -18,12 +18,12 @@ final class FloatingModel: ObservableObject {
     @Published var presented: Bool = false    // 出现/消失：弹簧放大+淡入 / 缩小+淡出
     @Published var loadProgress: Double? = nil // 加载进度：nil=不确定式动画，0..1=确定式%（下载）
     @Published var isLoading: Bool = false     // 是否处于模型加载/下载中（决定是否显示进度条）
+    @Published var accent: Color = .accentColor // 强调色（脉冲球/进度条）；设置面板实时改
 }
 
 struct FloatingView: View {
     @ObservedObject var model: FloatingModel
     var previewStatic = false                  // ImageRenderer 静态渲染（调样式用）
-    var accent: Color = .accentColor           // 单一可覆盖配色（Phase 2 设置接入）
 
     private var hasText: Bool { !model.text.isEmpty }
     private var showStatus: Bool { !model.statusLine.isEmpty && !hasText }
@@ -61,7 +61,7 @@ struct FloatingView: View {
 
     private func capsule(phase: CGFloat) -> some View {
         HStack(spacing: 12) {
-            PulseOrb(intensity: intensity, idle: phase, listening: model.isListening, color: accent)
+            PulseOrb(intensity: intensity, idle: phase, listening: model.isListening, color: model.accent)
                 .frame(width: 22, height: 22)
 
             if showStatus {
@@ -71,7 +71,7 @@ struct FloatingView: View {
                         .foregroundStyle(.secondary)
                     // 加载/下载时显示进度条（确定式填充或不确定式扫动）；非加载状态（如 toast）无 loadProgress 也可隐去
                     if isLoadingContext {
-                        LoadBar(progress: model.loadProgress, color: accent)
+                        LoadBar(progress: model.loadProgress, color: model.accent)
                             .frame(width: 196, height: 4)
                     }
                 }

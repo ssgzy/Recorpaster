@@ -53,12 +53,13 @@ nonisolated final class TextOutput: @unchecked Sendable {
     }
 
     /// 入队一段文本，按 mode 上屏或复制。标点恢复 + 规整都在串行队列（off-main、按入队有序）。
-    func enqueue(_ raw: String, mode: OutputMode) {
+    /// punctuate=false（设置关标点 / 语言=英文）则跳过 BERT 后处理、输出原始文本。
+    func enqueue(_ raw: String, mode: OutputMode, punctuate: Bool = true) {
         guard !raw.isEmpty else { return }
         queue.async { [weak self] in
             guard let self else { return }
-            let punctuated = self.restorer.restore(raw)   // 先补中文标点（CoreML 后处理）
-            let text = normalizeCJKPunct(punctuated)      // 再把残留 ASCII 标点在 CJK 间转全角
+            let processed = punctuate ? self.restorer.restore(raw) : raw   // 补中文标点 / 输出原始
+            let text = normalizeCJKPunct(processed)       // 把残留 ASCII 标点在 CJK 间转全角（不增删字）
             guard !text.isEmpty else { return }
             // (d) 粘贴/复制前把最终文字打出来。
             Log.info("(d) 即将\(mode == .paste ? "上屏" : "复制"): \"\(text)\"")

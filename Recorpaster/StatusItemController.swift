@@ -19,7 +19,7 @@ final class StatusItemController: NSObject {
     private let menu = NSMenu()
 
     private let toggleItem = NSMenuItem(title: "开始 / 停止听写", action: nil, keyEquivalent: "")
-    private let settingsItem = NSMenuItem(title: "设置…（Phase 2）", action: nil, keyEquivalent: "")
+    private let settingsItem = NSMenuItem(title: "设置…", action: nil, keyEquivalent: ",")
     private let axItem = NSMenuItem(title: "打开系统设置 · 辅助功能", action: nil, keyEquivalent: "")
     private let imItem = NSMenuItem(title: "打开系统设置 · 输入监控", action: nil, keyEquivalent: "")
     private let micItem = NSMenuItem(title: "打开系统设置 · 麦克风", action: nil, keyEquivalent: "")
@@ -28,6 +28,7 @@ final class StatusItemController: NSObject {
 
     var onToggle: (@MainActor () -> Void)?
     var onQuit: (@MainActor () -> Void)?
+    var onSettings: (@MainActor () -> Void)?
 
     override init() {
         super.init()
@@ -37,7 +38,7 @@ final class StatusItemController: NSObject {
 
     private func buildMenu() {
         toggleItem.target = self; toggleItem.action = #selector(toggleAction)
-        settingsItem.isEnabled = false
+        settingsItem.target = self; settingsItem.action = #selector(settingsAction)
         axItem.target = self;  axItem.action = #selector(openAX)
         imItem.target = self;  imItem.action = #selector(openIM)
         micItem.target = self; micItem.action = #selector(openMic)
@@ -78,8 +79,9 @@ final class StatusItemController: NSObject {
     }
 
     // MARK: - 菜单动作
-    @objc private func toggleAction() { onToggle?() }
-    @objc private func quitAction()   { onQuit?() }
+    @objc private func toggleAction()   { onToggle?() }
+    @objc private func quitAction()     { onQuit?() }
+    @objc private func settingsAction() { onSettings?() }
     @objc private func openAX()  { Permissions.openSystemSettings(.accessibility) }
     @objc private func openIM()  { Permissions.openSystemSettings(.inputMonitoring) }
     @objc private func openMic() { Permissions.openSystemSettings(.microphone) }

@@ -18,7 +18,7 @@ import AppKit
 import CoreGraphics
 
 nonisolated final class HotKeyMonitor {
-    private let keyCode: Int64
+    private var keyCode: Int64
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var isDown = false
@@ -26,6 +26,8 @@ nonisolated final class HotKeyMonitor {
     /// 按下 / 松开回调（在主线程触发）。
     var onPress: (@MainActor () -> Void)?
     var onRelease: (@MainActor () -> Void)?
+    /// 录制快捷键期间暂停：忽略 flagsChanged，别让录键本身触发听写。
+    var paused = false
 
     init(keyCode: Int64) {
         self.keyCode = keyCode
@@ -56,6 +58,13 @@ nonisolated final class HotKeyMonitor {
         return true
     }
 
+    /// 热换快捷键 keyCode（tap 监听全部 flagsChanged，仅 handle 里按 keyCode 匹配，故无需重建 tap）。
+    /// 清 isDown 防换键瞬间卡住的「按下」态造成幻影会话。
+    func updateKeyCode(_ code: Int64) {
+        keyCode = code
+        isDown = false
+    }
+
     func stop() {
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
@@ -72,10 +81,20 @@ nonisolated final class HotKeyMonitor {
         return Unmanaged.passUnretained(event)
     }
 
+    /// 配置 keyCode 对应的修饰键掩码（不能写死 ⌥：设置允许 ⌘/⌃/fn 当触发键）。
+    private func modifierMask(for code: Int64) -> CGEventFlags {
+        switch code {
+        case 54, 55: return .maskCommand        // 右/左 ⌘
+        case 59, 62: return .maskControl        // 左/右 ⌃
+        case 63:     return .maskSecondaryFn    // fn
+        default:     return .maskAlternate      // 58/61 左/右 ⌥
+        }
+    }
+
     /// 用系统真实修饰键状态校正 isDown：若键已松开却仍标记按下，补发一次 onRelease 收尾会话。
     private func reconcileModifierState() {
-        let altNow = CGEventSource.flagsState(.combinedSessionState).contains(.maskAlternate)
-        if isDown && !altNow {
+        let down = CGEventSource.flagsState(.combinedSessionState).contains(modifierMask(for: keyCode))
+        if isDown && !down {
             isDown = false
             MainActor.assumeIsolated { onRelease?() }
         }
@@ -90,19 +109,18 @@ nonisolated final class HotKeyMonitor {
             return
         }
         guard type == .flagsChanged else { return }
+        if paused { return }   // 录制快捷键中：忽略，别触发听写
         let code = event.getIntegerValueField(.keyboardEventKeycode)
-        let alt = event.flags.contains(.maskAlternate)
-        // 诊断：每个 flagsChanged 都打（看事件是否到达 tap、keyCode 是否为 61）。
-        Log.info("热键: flagsChanged keyCode=\(code) alt=\(alt)（目标=\(keyCode)）")
-
         guard code == keyCode else { return }
-        if alt && !isDown {
+        // 该触发键对应的修饰键此刻是否按下（按 keyCode 推导掩码，⌥/⌘/⌃/fn 通用）。
+        let down = event.flags.contains(modifierMask(for: keyCode))
+        if down && !isDown {
             isDown = true
-            Log.ok("热键: 右⌥ 按下 → onPress")
+            Log.ok("热键: 触发键(keyCode=\(keyCode)) 按下 → onPress")
             MainActor.assumeIsolated { onPress?() }
-        } else if !alt && isDown {
+        } else if !down && isDown {
             isDown = false
-            Log.info("热键: 右⌥ 松开 → onRelease")
+            Log.info("热键: 触发键(keyCode=\(keyCode)) 松开 → onRelease")
             MainActor.assumeIsolated { onRelease?() }
         }
     }

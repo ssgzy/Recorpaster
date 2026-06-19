@@ -39,6 +39,12 @@ nonisolated final class PunctuationRestorer: @unchecked Sendable {
     private let sepID: Int32 = 102
     private let unkID: Int32 = 100
 
+    /// 是否汉字（CJK 统一表意 + 扩展 A）。
+    static func isHan(_ c: Character) -> Bool {
+        guard c.unicodeScalars.count == 1, let s = c.unicodeScalars.first else { return false }
+        return (0x4E00...0x9FFF).contains(s.value) || (0x3400...0x4DBF).contains(s.value)
+    }
+
     private let lock = NSLock()
     private var model: MLModel?
     private var vocab: [Character: Int32] = [:]
@@ -125,7 +131,8 @@ nonisolated final class PunctuationRestorer: @unchecked Sendable {
 
     func restore(_ text: String) -> String {
         lock.lock(); let m = model; let v = vocab; lock.unlock()
-        guard let m, !v.isEmpty, !text.isEmpty else { return text }
+        // 仅对**含汉字**的文本补标点：BERT 是中文模型，纯英文（含自动检测到英文）不该被加中文标点。
+        guard let m, !v.isEmpty, !text.isEmpty, text.contains(where: Self.isHan) else { return text }
         let chars = Array(text)
         var out = ""
         var i = 0
