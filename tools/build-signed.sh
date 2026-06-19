@@ -48,7 +48,12 @@ APP="$(xcodebuild -scheme Recorpaster -configuration Debug \
 codesign --force --deep -s "$CERT" --timestamp=none "$APP"
 echo "→ 签名身份："
 codesign -d -r- "$APP" 2>&1 | grep -i designated
+# 4) 拷一份到桌面，方便直接双击运行（签名身份相同，TCC 授权通用、跨重编持久）
+DESK="$HOME/Desktop/Recorpaster.app"
+rm -rf "$DESK"
+cp -R "$APP" "$DESK"
+codesign --verify --deep "$DESK" 2>/dev/null && echo "→ 桌面版签名校验通过"
+
 echo ""
-echo "✅ 已签名: $APP"
-echo "   测试请用： open -n \"$APP\""
-echo "   （授权一次后，之后重编再 open 同一 .app，辅助功能/输入监控/麦克风授权都还在。）"
+echo "✅ 桌面版已就绪（双击即可运行）: $DESK"
+echo "   首次授权辅助功能/输入监控/麦克风后，之后重跑本脚本再双击，授权都还在。"

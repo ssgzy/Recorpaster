@@ -263,10 +263,13 @@ final class AppController {
         loadingShown = true
     }
 
+    /// 模型就绪/收尾时调用：无条件清掉「加载模型中…」等常驻文案并隐藏浮窗（除非正在听写）。
+    /// 不再用 loadingShown 守卫——它会被 toast 等提前置 false，导致 ready 时不清、文案残留卡死。
     private func hideLoadingIfShown() {
-        guard loadingShown else { return }
         loadingShown = false
-        floating.setVisible(false)
+        guard !floating.model.isListening else { return }   // 听写中不动
+        floating.model.statusLine = ""                       // 清掉「加载模型中…」文案，别残留
+        floating.setVisible(false)                           // 回 idle：隐藏浮窗
     }
 
     /// 临时提示一句，到点自动淡出（被新会话/新提示取代则不隐藏）。
