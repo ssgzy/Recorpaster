@@ -53,11 +53,16 @@ nonisolated final class PunctuationRestorer: @unchecked Sendable {
 
     // MARK: - 准备（启动时 async 调用一次）
 
-    /// 确保模型就绪：已编译缓存 → 本地 .mlpackage 编译 → HF 下载编译。失败则保持降级（无标点）。
+    /// 确保模型就绪：app bundle 内置 → App Support 已编译缓存 → 本地 .mlpackage 编译 → HF 下载编译。
+    /// 任一步失败/缺失则保持降级（无标点）。发布版打包了模型 → 下载即用、离线可标点。
     func prepare() async {
         if isReady { return }
         loadVocab()
         do {
+            // 1) 优先 app bundle 内置（发布版打进 Resources，Xcode 已编成 .mlmodelc）→ 下载即用、离线可标点
+            if let bundled = Bundle.main.url(forResource: "PunctZh", withExtension: "mlmodelc") {
+                try loadModel(from: bundled); return
+            }
             if FileManager.default.fileExists(atPath: Self.compiledURL.path) {
                 try loadModel(from: Self.compiledURL); return
             }

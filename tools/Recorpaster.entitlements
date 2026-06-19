@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 麦克风采集（hardened runtime 下需要；Info.plist 已有 NSMicrophoneUsageDescription）。 -->
+	<!-- 全局热键 / 辅助功能 / 输入监控 是 TCC 运行时授权，不是 entitlement，hardened runtime 不拦。 -->
+	<!-- App 未沙盒化（ENABLE_APP_SANDBOX=NO），故无沙盒相关 entitlement。 -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

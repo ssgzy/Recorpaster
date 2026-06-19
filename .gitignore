@@ -4,3 +4,7 @@
 
 # logo 源图（生成 docs/logo.png + AppIcon 后留本地即可）
 recorpaster.png
+
+# 发布构建产物
+build/
+dist/
