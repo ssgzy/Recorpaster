@@ -59,6 +59,11 @@ final class AppController {
 
         // 实时电平 → 浮窗律动
         engine.onLevel = { [weak self] lvl in self?.floating.model.level = lvl }
+        // 流式预览：边说边把临时识别文本喂到条上逐字浮现（粘贴仍以松开整段转写为准）。
+        engine.onPartial = { [weak self] text in
+            guard let self, self.state == .active else { return }
+            self.floating.model.text = text
+        }
 
         // 权限：缺啥真正弹啥的系统框 + 加进 TCC 列表（OS 自身去重，不会反复刷屏；之后看门狗只轮询）
         Permissions.promptAccessibilityIfNeeded()

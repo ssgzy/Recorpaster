@@ -125,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         previewHud = fp
         fp.model.isListening = true
         fp.setVisible(true)
-        let sample = Array("你好，今天天气不错，我们一起去公园散步吧")
+        let sample = Array("你好，今天天气不错，我们一起去公园散步吧，这是一段用来测试实时流式逐字浮现的中文录音")
         var t = 0.0
         var shown = 0
         previewTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { _ in

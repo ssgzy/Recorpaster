@@ -40,6 +40,12 @@ final class DictationEngine {
     private let onStatus: @MainActor (EngineStatus) -> Void
     /// 实时电平回调（每个采集 buffer 一次，~10-12/s 的瞬时 RMS）。供浮窗律动用，可选设置。
     var onLevel: (@MainActor (Float) -> Void)?
+    /// 流式预览回调：会话期间不断吐出「到目前为止」的临时识别文本（无标点、用完即弃，仅供条上预览）。
+    var onPartial: (@MainActor (String) -> Void)?
+    /// 流式预览开关（兜底：关掉即退回 Step1「松开后才出字」）。RECOR_NO_STREAM=1 也可强制关。
+    var streamingEnabled = true
+    private var streamTask: Task<Void, Never>?
+    private var lastStreamCount = 0
 
     private var whisperKit: WhisperKit?
     private(set) var isReady = false
@@ -119,6 +125,7 @@ final class DictationEngine {
         sessionSamples.removeAll(keepingCapacity: true)
         didWarnCap = false
         levelEnv = 0
+        lastStreamCount = 0
         meterCount = 0
         meterSum = 0
         meterStart = Date()
@@ -154,6 +161,47 @@ final class DictationEngine {
         }
         onStatus(.listening)
         Log.info("会话开始（采集中）。")
+        startStreamingPreview()
+    }
+
+    // MARK: - 流式预览（轮询重转写，复用 MicCapture+transcribe；不碰 AudioProcessor / 粘贴路径）
+
+    private func startStreamingPreview() {
+        guard streamingEnabled,
+              ProcessInfo.processInfo.environment["RECOR_NO_STREAM"] != "1",
+              onPartial != nil else { return }
+        streamTask = Task { @MainActor in
+            while recording, !stopping, !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(450))
+                guard recording, !stopping, !Task.isCancelled else { break }
+                let samples = sessionSamples                       // 主线程拷贝，安全
+                guard samples.count >= Int(Double(AudioConstants.sampleRate) * 0.4),
+                      samples.count != lastStreamCount else { continue }
+                lastStreamCount = samples.count
+                let text = await transcribePartial(samples)        // 期间主线程空闲，采集继续
+                guard recording, !stopping, !Task.isCancelled, let text, !text.isEmpty else { continue }
+                onPartial?(text)
+            }
+        }
+    }
+
+    /// 临时转写（快、无 prompt、无标点）。仅供预览。
+    private func transcribePartial(_ audio: [Float]) async -> String? {
+        guard let wk = whisperKit else { return nil }
+        var opts = DecodingOptions()
+        opts.language = config.language
+        opts.temperature = 0
+        opts.usePrefillPrompt = true
+        opts.promptTokens = nil
+        opts.detectLanguage = false
+        opts.skipSpecialTokens = true
+        opts.withoutTimestamps = true
+        do {
+            let results = try await wk.transcribe(audioArray: audio, decodeOptions: opts)
+            return results.map(\.text).joined().trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            return nil   // 单次失败不影响（下次重试 / 最终整段转写兜底）
+        }
     }
 
     private func meter(_ delta: [Float]) {
@@ -178,6 +226,11 @@ final class DictationEngine {
         guard recording, !stopping else { return }
         stopping = true
         defer { stopping = false }
+
+        // 先停流式预览并等在途的临时转写跑完 → 避免与最终整段转写并发用同一模型。
+        streamTask?.cancel()
+        await streamTask?.value
+        streamTask = nil
 
         // 收尾：保持闸门开 ~0.3s 让尾音抵达，再停 tap、排空主队列，最后关闸门。
         try? await Task.sleep(for: .milliseconds(300))

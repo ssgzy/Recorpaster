@@ -133,41 +133,45 @@ struct PopText: View {
     let text: String
     var staticFull = false                     // 静态渲染（ImageRenderer 截图）时一次全显
     private static let maxVisible = 28          // 条上只显示尾部最近 N 字（全文仍照常粘贴）
-    @State private var revealed: Int
+    // 用**绝对字索引**记录已 pop 到哪：流式增长时新尾字始终会 pop（即便滑窗已满），
+    // 已显示的字不重 pop，靠后修订只换字不跳（id 按位置稳定）。
+    @State private var revealedUpTo: Int
     @State private var task: Task<Void, Never>?
 
     init(text: String, staticFull: Bool = false) {
         self.text = text
         self.staticFull = staticFull
-        let n = min(Self.maxVisible, Array(text).count)
-        _revealed = State(initialValue: staticFull ? n : 0)
+        _revealedUpTo = State(initialValue: staticFull ? Int.max : 0)
     }
 
     var body: some View {
-        let chars = Array(text.suffix(Self.maxVisible))
+        let all = Array(text)
+        let start = max(0, all.count - Self.maxVisible)
+        let visible = (start..<all.count).map { (i: $0, ch: all[$0]) }   // 尾部窗口 + 绝对索引
         HStack(spacing: 1) {
-            ForEach(chars.indices, id: \.self) { i in
-                Text(String(chars[i]))
-                    .opacity(i < revealed ? 1 : 0)
-                    .scaleEffect(i < revealed ? 1 : 0.85, anchor: .bottom)
-                    .offset(y: i < revealed ? 0 : 5)
+            ForEach(visible, id: \.i) { item in
+                Text(String(item.ch))
+                    .opacity(item.i < revealedUpTo ? 1 : 0)
+                    .scaleEffect(item.i < revealedUpTo ? 1 : 0.85, anchor: .bottom)
+                    .offset(y: item.i < revealedUpTo ? 0 : 5)
             }
         }
         .font(.system(size: 16, weight: .semibold, design: .rounded))
         .foregroundStyle(.primary)
         .fixedSize()                            // 自然宽度，胶囊随文字撑开
-        .onAppear { reveal(to: chars.count) }
-        .onChange(of: text) { _, new in reveal(to: min(Self.maxVisible, Array(new).count)) }
+        .onAppear { reveal(to: all.count) }
+        .onChange(of: text) { _, _ in reveal(to: Array(text).count) }
     }
 
-    private func reveal(to target: Int) {
-        guard revealed < target else { return }
+    private func reveal(to total: Int) {
+        if revealedUpTo > total { revealedUpTo = total }   // 文本变短（修订/重置）→ 收回
+        guard !staticFull, revealedUpTo < total else { return }
         task?.cancel()
         task = Task { @MainActor in
-            while revealed < target {
+            while revealedUpTo < total {
                 try? await Task.sleep(for: .milliseconds(28))
                 if Task.isCancelled { return }
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.60)) { revealed += 1 }
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.60)) { revealedUpTo += 1 }
             }
         }
     }
