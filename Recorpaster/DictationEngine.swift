@@ -47,6 +47,24 @@ final class DictationEngine {
     private var streamTask: Task<Void, Never>?
     private var lastStreamCount = 0
 
+    // 转写互斥：WhisperKit 内部无串行（共享 currentTimings/modelState），并发转写不安全。
+    // FIFO 异步互斥锁，保证流式临时转写与最终整段转写绝不重叠；不靠 cancel，避免污染 WhisperKit。
+    private var transcribeBusy = false
+    private var transcribeWaiters: [CheckedContinuation<Void, Never>] = []
+
+    private func acquireTranscribe() async {
+        if !transcribeBusy { transcribeBusy = true; return }
+        await withCheckedContinuation { transcribeWaiters.append($0) }
+        // 被上一笔 release 唤醒 → 此刻已持有锁（busy 保持 true）。
+    }
+    private func releaseTranscribe() {
+        if transcribeWaiters.isEmpty {
+            transcribeBusy = false
+        } else {
+            transcribeWaiters.removeFirst().resume()   // 把锁交给下一个等待者（FIFO）
+        }
+    }
+
     private var whisperKit: WhisperKit?
     private(set) var isReady = false
 
@@ -187,7 +205,9 @@ final class DictationEngine {
 
     /// 临时转写（快、无 prompt、无标点）。仅供预览。
     private func transcribePartial(_ audio: [Float]) async -> String? {
-        guard let wk = whisperKit else { return nil }
+        await acquireTranscribe()
+        defer { releaseTranscribe() }
+        guard !stopping, let wk = whisperKit else { return nil }   // 等锁期间若已进入收尾，放弃这笔
         var opts = DecodingOptions()
         opts.language = config.language
         opts.temperature = 0
@@ -226,10 +246,11 @@ final class DictationEngine {
         guard recording, !stopping else { return }
         stopping = true
         defer { stopping = false }
+        Log.info("收尾：停止中…")
 
-        // 先停流式预览并等在途的临时转写跑完 → 避免与最终整段转写并发用同一模型。
-        streamTask?.cancel()
-        await streamTask?.value
+        // 关键：**不 cancel 流式任务**——cancel 会把取消传进 WhisperKit 内部、疑似卡住在途转写不返回，
+        // 导致 stop() 永久挂起、收尾永不执行。改为只置 stopping：轮询循环会因 stopping 自行退出（≤450ms）；
+        // 最终整段转写经下面的转写互斥锁排在在途临时转写之后（有界等待、绝不并发），无需在此 await 流式任务。
         streamTask = nil
 
         // 收尾：保持闸门开 ~0.3s 让尾音抵达，再停 tap、排空主队列，最后关闸门。
@@ -238,8 +259,10 @@ final class DictationEngine {
         await drainMainQueue()
         recording = false
         onStatus(.ready)
+        Log.info("收尾：采集已停，开始最终整段转写。")
 
         await transcribeWhole()
+        Log.info("收尾：完成。")
     }
 
     /// 等已入队的主队列 block（录音回调）全部跑完——它们 FIFO 排在本 block 之前，故先执行。
@@ -281,29 +304,34 @@ final class DictationEngine {
         opts.skipSpecialTokens = true
         opts.withoutTimestamps = true
 
-        // (b) 何时调 transcribe
+        // (b) 何时调 transcribe（经互斥锁：若有在途流式临时转写，先等它跑完，绝不并发）
         Log.info("(b) 调用 WhisperKit.transcribe …（整段转写，language=\(config.language ?? "auto")，原生标点）")
+        await acquireTranscribe()
         let t0 = Date()
+        let results: [TranscriptionResult]
         do {
-            let results = try await wk.transcribe(audioArray: audio, decodeOptions: opts)
-            let cost = Date().timeIntervalSince(t0)
-            let raw = results.map(\.text).joined()
-            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            for r in results {
-                for s in r.segments {
-                    Log.info("(c) seg#\(s.id) avgLogprob=\(String(format: "%.3f", s.avgLogprob)) noSpeechProb=\(String(format: "%.3f", s.noSpeechProb)) compRatio=\(String(format: "%.2f", s.compressionRatio)) tokens=\(s.tokens.count)")
-                }
-            }
-            // (c) transcribe 返回什么（空也打）
-            Log.info("(c) transcribe 返回: \"\(raw)\"（segments=\(results.count), 耗时\(String(format: "%.2f", cost))s, RTF=\(String(format: "%.2f", dur > 0 ? cost / dur : 0))）")
-            guard !text.isEmpty else {
-                Log.warn("(c) transcribe 返回空文本（可能没说话/太轻/被判静音）")
-                return
-            }
-            onResult(DictationResult(text: text, audioSec: dur, costSec: cost))
+            results = try await wk.transcribe(audioArray: audio, decodeOptions: opts)
+            releaseTranscribe()
         } catch {
+            releaseTranscribe()
             Log.error("(c) transcribe 抛错: \(error)")
+            return
         }
+        let cost = Date().timeIntervalSince(t0)
+        let raw = results.map(\.text).joined()
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        for r in results {
+            for s in r.segments {
+                Log.info("(c) seg#\(s.id) avgLogprob=\(String(format: "%.3f", s.avgLogprob)) noSpeechProb=\(String(format: "%.3f", s.noSpeechProb)) compRatio=\(String(format: "%.2f", s.compressionRatio)) tokens=\(s.tokens.count)")
+            }
+        }
+        // (c) transcribe 返回什么（空也打）
+        Log.info("(c) transcribe 返回: \"\(raw)\"（segments=\(results.count), 耗时\(String(format: "%.2f", cost))s, RTF=\(String(format: "%.2f", dur > 0 ? cost / dur : 0))）")
+        guard !text.isEmpty else {
+            Log.warn("(c) transcribe 返回空文本（可能没说话/太轻/被判静音）")
+            return
+        }
+        onResult(DictationResult(text: text, audioSec: dur, costSec: cost))
     }
 
     // MARK: - 🔬 诊断转写（同段音频跑两遍：A=带标点 prompt / B=不带 prompt）
