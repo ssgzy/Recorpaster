@@ -146,9 +146,10 @@ class Config:
     # 标点风格引导：一段“本身带标点”的中文，让 Whisper 跟随该风格输出标点（非指令）。
     # 向后兼容新增字段，默认非空即生效；置空字符串可关闭。
     initial_prompt: Optional[str] = "以下是普通话的句子，请加上标点。"
-    # VAD 后端：'torch'(silero 官方包，默认，行为基准) | 'onnx'(纯 onnxruntime，无 torch，打包轻量化用)。
-    # 向后兼容新增字段，默认 'torch' 保持原行为；两者断句事件已离线核对完全一致。
-    vad_backend: str = "torch"
+    # VAD 后端：'onnx'(纯 onnxruntime，无 torch，默认，打包轻量化用) | 'torch'(silero 官方包)。
+    # 两者断句事件已离线核对完全一致。默认 onnx 与 settings.DEFAULTS 一致，且冻结 EXE 里
+    # torch 被打包排除——见 _build_vad：冻结环境强制 onnx，缺 torch 也优雅回退，绝不崩溃。
+    vad_backend: str = "onnx"
     # —— 一般不用动 ——
     lookback_chunks: int = 10              # 句首回看，避免吞字（约 320ms）
     min_utter_sec: float = 0.3             # 短于此时长丢弃，过滤噪声
@@ -185,14 +186,29 @@ class DictationEngine:
     # ---- VAD 构建：按 vad_backend 选 torch 或纯 onnx，返回 (vad, infer(chunk_np)) ----
     def _build_vad(self):
         cfg = self.cfg
-        if cfg.vad_backend == "onnx":
+
+        def _build_onnx():
             vad = _OnnxVADIterator(_find_silero_onnx(), threshold=cfg.vad_threshold,
                                    sampling_rate=SAMPLE_RATE,
                                    min_silence_duration_ms=cfg.min_silence_ms)
             return vad, (lambda chunk: vad(chunk, return_seconds=False))
-        # 默认 torch 后端（惰性导入，避免 onnx 模式把 torch 拖进来）
-        import torch
-        from silero_vad import load_silero_vad, VADIterator
+
+        backend = cfg.vad_backend
+        # 冻结的 EXE 里 torch / silero_vad 被打包排除（见 Recorpaster-win.spec EXCLUDES）。
+        # 迁移/手改过的 config 若残留 vad_backend='torch'，import torch 会 ModuleNotFoundError
+        # 直接崩溃——冻结环境一律强制 onnx，杜绝该崩溃路径。
+        if backend != "onnx" and getattr(sys, "frozen", False):
+            print("[vad] 冻结环境不含 torch，强制改用 onnx 后端。")
+            backend = "onnx"
+        if backend == "onnx":
+            return _build_onnx()
+        # torch 后端（惰性导入，避免 onnx 模式把 torch ~2GB 拖进来）；缺失则优雅回退 onnx。
+        try:
+            import torch
+            from silero_vad import load_silero_vad, VADIterator
+        except Exception as e:
+            print(f"[vad] torch/silero_vad 不可用（{e}），回退 onnx 后端。")
+            return _build_onnx()
         vad = VADIterator(load_silero_vad(), threshold=cfg.vad_threshold,
                           sampling_rate=SAMPLE_RATE,
                           min_silence_duration_ms=cfg.min_silence_ms)

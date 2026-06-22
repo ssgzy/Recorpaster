@@ -58,6 +58,10 @@ PASTE_MOD = keyboard.Key.cmd if IS_MAC else keyboard.Key.ctrl
 FLOAT_W, FLOAT_H = 480, 64
 FLOAT_MARGIN_BOTTOM = 48        # 面板底边距屏幕可见区底部的距离
 
+# 上屏后延迟还原剪贴板的等待秒数：给“慢读”目标（Office/Electron/RDP）足够时间读到我们
+# 写入的文本，再放回用户原内容；放后台线程做，不拖住下一句上屏。
+PASTE_RESTORE_DELAY = 0.6
+
 
 # 轻量本地标点规整：仅当 ASCII 标点“两侧都是中日韩汉字”时转全角，
 # 不动英文/数字/小数点（如 3,000 / v1.2 / OK,我）。跨平台一致。
@@ -203,6 +207,15 @@ class App:
 
         # 输出队列：识别线程只管入队，单独线程顺序上屏/复制，避免阻塞下一句识别
         self._out_q: "queue.Queue[str]" = queue.Queue()
+
+        # 上屏后还原剪贴板的状态（沿用本工程的 epoch 套路，见 _vis_epoch）：一串连续上屏只在
+        # 开头记一次“用户真实原始内容”；每次上屏自增 epoch，只有最后一次的延迟还原（epoch 仍最新）
+        # 才执行，避免唤醒顺序/计数器把上一句文本当成原始内容还原回去。
+        self._clip_lock = threading.Lock()
+        self._clip_original: str | None = None   # 一串开头用户真实的剪贴板
+        self._clip_text: str | None = None       # 我们最近一次写入的文本（还原前比对用）
+        self._clip_active = False                 # 是否处于一串上屏中（决定是否重采样 original）
+        self._clip_epoch = 0                      # 每次上屏自增，唯一标识“最后一次”
 
         # 托盘
         self._tray = None
@@ -356,10 +369,30 @@ class App:
 
     # ---------------- 引擎 ----------------
     @staticmethod
+    def _hf_hub_dir() -> str:
+        """HuggingFace hub 缓存目录，遵循 HF_HUB_CACHE / HF_HOME（与 huggingface_hub / faster-whisper
+        下载时实际使用的目录一致）。旧实现硬编码 ~/.cache/huggingface/hub，用户若设了 HF_HOME 会
+        误判“模型不存在”而每次都弹首次下载提示。"""
+        try:
+            # huggingface_hub 已综合 HF_HUB_CACHE/HF_HOME/默认路径解析好这个常量
+            from huggingface_hub.constants import HF_HUB_CACHE
+            if HF_HUB_CACHE:
+                return HF_HUB_CACHE
+        except Exception:
+            pass
+        env = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")
+        if env:
+            return env
+        hf_home = os.environ.get("HF_HOME")
+        if hf_home:
+            return os.path.join(hf_home, "hub")
+        return os.path.expanduser("~/.cache/huggingface/hub")
+
+    @staticmethod
     def _model_cached(cfg) -> bool:
         """模型是否已在本地 HuggingFace 缓存（决定首次运行是否需要下载提示）。"""
         try:
-            hub = os.path.expanduser("~/.cache/huggingface/hub")
+            hub = App._hf_hub_dir()
             if cfg.engine == "mlx":
                 repo = cfg.mlx_repo.replace("/", "--")
                 return os.path.isdir(os.path.join(hub, f"models--{repo}"))
@@ -448,21 +481,52 @@ class App:
                 print(f"[warn] 输出失败: {e}")
 
     def _paste(self, text: str):
-        """剪贴板 + 模拟 Ctrl+V（对中文最稳）；用完还原剪贴板。"""
-        try:
-            prev = pyperclip.paste()
-        except Exception:
-            prev = ""
+        """剪贴板 + 模拟 Ctrl+V（对中文最稳）；延迟且有条件地还原“用户真实的原始剪贴板”。
+
+        两个坑都修了：
+        1) 旧实现固定 sleep(0.12) 后立刻还原——Office/Electron/RDP 等“慢读”目标会在还原之后才去
+           读剪贴板，于是粘到旧内容。→ 把还原甩到后台线程，等 PASTE_RESTORE_DELAY 再做。
+        2) 连续听写一串句子时，每句都把“当前剪贴板”当原始内容采样，会导致最终还原成上一句的文本
+           而非用户真正的原始内容。→ 一串上屏只在开头采样一次原始内容；每次上屏自增 epoch，只有
+           最后一次（epoch 仍最新）的延迟还原才执行，且把“比对+还原”整体放在锁内，杜绝唤醒顺序
+           不定、以及新一串在还原间隙把上一句当原始内容重采样的竞争。仍要求剪贴板仍是我们写入的
+           （用户中途改了就不覆盖）。"""
+        with self._clip_lock:
+            if not self._clip_active:
+                try:
+                    self._clip_original = pyperclip.paste()   # 一串的开头：记真实原始剪贴板
+                except Exception:
+                    self._clip_original = None
+                self._clip_active = True
+            self._clip_text = text
+            self._clip_epoch += 1
+            epoch = self._clip_epoch
+
         pyperclip.copy(text)
         time.sleep(0.05)
         with self._kb.pressed(PASTE_MOD):
             self._kb.press("v")
             self._kb.release("v")
-        time.sleep(0.12)
-        try:
-            pyperclip.copy(prev)   # 还原用户原本的剪贴板内容
-        except Exception:
-            pass
+
+        def _restore():
+            time.sleep(PASTE_RESTORE_DELAY)
+            with self._clip_lock:
+                if epoch != self._clip_epoch:
+                    return   # 之后又有上屏 → 交给更晚那次的还原负责（保证整串只还原一次）
+                original = self._clip_original
+                expected = self._clip_text
+                self._clip_active = False
+                if original is None:
+                    return
+                # 比对+还原放在锁内：新一串要重采样 original 必须等本次还原彻底完成（含 copy），
+                # 否则会把刚粘的本句文本误当成“原始内容”。
+                try:
+                    if pyperclip.paste() == expected:   # 仍是我们最后写入的 → 安全还原；改了就不覆盖
+                        pyperclip.copy(original)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_restore, daemon=True).start()
 
     # ---------------- 会话开关 ----------------
     # 设计：悬浮条「可见性」与引擎「会话状态」彻底解耦。
@@ -595,13 +659,43 @@ class App:
         except Exception as e:
             print(f"[warn] 显示悬浮窗失败: {e}")
 
+    @staticmethod
+    def _cursor_screen():
+        """返回鼠标所在的 pywebview Screen（其 x/y/width/height 为逻辑像素，与 win.move 同坐标系）。
+        非 Windows / 取不到 / 落不到任何屏时返回 None，由调用方退回主屏。
+
+        关键：全程只用 pywebview 的逻辑坐标——和原来能正确摆位的代码同一坐标系，只是换成
+        光标所在那块屏。绝不混入物理像素（曾因把物理坐标喂给逻辑像素的 win.move 而在缩放屏错位）。"""
+        if not IS_WINDOWS:
+            return None
+        screens = getattr(webview, "screens", None)
+        if not screens:
+            return None
+        try:
+            import ctypes
+            from ctypes import wintypes
+            pt = wintypes.POINT()
+            # 系统级 DPI 感知下（pywebview 默认），GetCursorPos 与 Screen.x/y 同处一套逻辑坐标。
+            if not ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
+                return None
+            for s in screens:
+                if s.x <= pt.x < s.x + s.width and s.y <= pt.y < s.y + s.height:
+                    return s
+        except Exception:
+            return None
+        return None
+
     def _position_window(self, win):
         try:
-            scr = webview.screens[0] if getattr(webview, "screens", None) else None
+            scr = self._cursor_screen()
+            if scr is None:
+                screens = getattr(webview, "screens", None)
+                scr = screens[0] if screens else None
             if scr is None:
                 return
-            x = int((scr.width - FLOAT_W) / 2)
-            y = int(scr.height - FLOAT_H - FLOAT_MARGIN_BOTTOM)
+            # 用所在屏的逻辑原点 + 尺寸定位到底部居中（主屏 x=y=0 时与旧行为完全一致）。
+            x = int(scr.x + (scr.width - FLOAT_W) / 2)
+            y = int(scr.y + scr.height - FLOAT_H - FLOAT_MARGIN_BOTTOM)
             win.move(x, y)
         except Exception as e:
             print(f"[warn] 悬浮窗摆位失败: {e}")
@@ -617,6 +711,25 @@ class App:
                 return
             time.sleep(0.1)
 
+    def _win_hwnd(self) -> int:
+        """取悬浮窗的原生 HWND。优先 pywebview 的 window.native.Handle（winforms 后端，精确、
+        不受窗口标题影响）；取不到再退回按标题查找。返回 0 表示尚不可用。
+
+        旧实现只用全局 FindWindowW(None,"听写")：与“听写设置”同前缀标题可能撞车、或标题被
+        本地化/改名后静默失效。用 native.Handle 直接锁定本窗口，根除该脆弱耦合。"""
+        win = self.window
+        native = getattr(win, "native", None) if win is not None else None
+        if native is not None:
+            try:
+                return int(native.Handle.ToInt32())   # winforms Form 的 HWND
+            except Exception:
+                pass
+        try:
+            import ctypes
+            return int(ctypes.windll.user32.FindWindowW(None, "听写") or 0)
+        except Exception:
+            return 0
+
     def _win_make_noactivate(self):
         """把悬浮条设为「不激活 + 工具窗」，避免抢走目标 App 的键盘焦点。
         最佳努力：找不到窗口就不置 done（下次再试）；仅在成功设置后置 done（幂等）。"""
@@ -625,7 +738,7 @@ class App:
         try:
             import ctypes
             u = ctypes.windll.user32
-            hwnd = u.FindWindowW(None, "听写")
+            hwnd = self._win_hwnd()
             if not hwnd:
                 return   # 原生窗口还没就绪，下次再试（不置 done）
             GWL_EXSTYLE = -20
